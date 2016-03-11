@@ -42,7 +42,7 @@ row_id;second_id;chrom;strand;upstream_exon_end_position;exon_start_position;exo
 
 ## Examples 
 
-![NOVA](example/NOVA.png)
+![NOVA](examples/NOVA.png)
 
 ## Contributors
 
