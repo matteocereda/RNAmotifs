@@ -3,9 +3,9 @@
 
 This is the version 2.0 of [RNAmotifs](http://genomebiology.biomedcentral.com/articles/10.1186/gb-2014-15-1-r20]).
 
-RNAmotifs is an integrated *R, python, C++ software* that evaluates the sequence around differentially regulated alternative exons to identify clusters of short sequences, referred to as multivalent RNA motifs. From a list of alternatively spliced exons, RNAmotifs identifies clusters of short non-degenerate (ND) or degenerate (DG) tetramers that are enriched at specific positions around the enhanced and silenced exons. Moreover, RNAmotifs generates the RNA splicing map of entiched motifs. RNAmotifs has been successfully used for the identification of multivalent RNA motifs bound by RNA-binding proteins such as NOVA, PTBP1, hnRNP C, TARDBP, and TIA1 and TIAL1.
+RNAmotifs is an integrated *R, python, C++ software* that evaluates the sequence around differentially regulated alternative exons to identify clusters of short sequences, referred to as multivalent RNA motifs, bound by RNA-binding proteins. From a list of alternatively spliced exons, RNAmotifs identifies clusters of short non-degenerate or degenerate tetramers that are enriched at specific positions around the enhanced and silenced exons. Moreover, RNAmotifs generates the RNA splicing map of entiched motifs. RNAmotifs has been successfully used for the identification of multivalent RNA motifs bound by RNA-binding proteins such as NOVA, PTBP1, hnRNP C, TARDBP, and TIA1 and TIAL1.
 
-RNAmotifs is based on [GeCo++](http://bioinformatics.oxfordjournals.org/content/27/9/1313.long), a C++ class library that provides a class hierarchy for the development of bioinformatic algorithm when annotations of genomic elements (e.g. binding sites, mutations) to sequences are taken into account. GeCo++ is available @ (http://bioinformatics.emedea.it/geco/)
+RNAmotifs is based on [GeCo++](http://bioinformatics.oxfordjournals.org/content/27/9/1313.long), a C++ class library that provides a class hierarchy for the development of bioinformatic algorithm when annotations of genomic elements (e.g. binding sites, mutations) to sequences are taken into account. GeCo++ is available @ http://bioinformatics.emedea.it/geco/
 
 
 Please cite:
@@ -30,7 +30,11 @@ export PYTHONPATH=$PYTHONPATH:/path_to_RNAmotifs_root_folder
 
 ## Contributors
 
-RNAmotifs have been designed and implemented by Matteo Cereda. 
-Gregor Rot and Uberto Pozzoli 
+RNAmotifs has been designed by Dr *Matteo Cereda* and Prof Jernej Ule. 
+Main developer: Matteo Cereda. Contributing developers Dr Gregor Rot and Dr Uberto Pozzoli.
+
+Contributions are always welcome!
 
 ## License
+
+Please read the [Licence](LICENSE) first
