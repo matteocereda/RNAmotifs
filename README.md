@@ -28,7 +28,7 @@ make
 export PYTHONPATH=$PYTHONPATH:/path_to_RNAmotifs_root_folder
 ```
 
-- Download *twoBitToFa* from http://hgdownload.cse.ucsc.edu/admin/exe and place it in the folder path_to_RNAmotifs_root_folder/m3_light/genomes
+- Download *twoBitToFa* from http://hgdownload.cse.ucsc.edu/admin/exe it in the m3_light/genomes
 
 
 
@@ -38,13 +38,19 @@ export PYTHONPATH=$PYTHONPATH:/path_to_RNAmotifs_root_folder
 
 row_id;second_id;chrom;strand;upstream_exon_end_position;exon_start_position;exon_end_position;dwstream_exon_start_position;diRank
 
-- Download the fasta sequence of your genome of interest. Follow the intructions provided in (m3_light/genomes/hg19.download.sh), or in (m3_light/genomes/hg19.download.sh)
+- Download the fasta sequence of your genome of interest. Follow the intructions in (m3_light/genomes/hg19.download.sh), or in (m3_light/genomes/hg19.download.sh)
+
+## Examples 
+
+![NOVA](example/NOVA.png)
 
 ## Contributors
 
 RNAmotifs has been designed by Dr **Matteo Cereda** and Prof **Jernej Ule**. 
 
-Main developer: Matteo Cereda. Contributing developers Dr Gregor Rot and Dr Uberto Pozzoli.
+Main developer: Matteo Cereda. 
+
+Contributing developers: Gregor Rot, Peter Juvan and Uberto Pozzoli.
 
 Contributions are always welcome!
 
