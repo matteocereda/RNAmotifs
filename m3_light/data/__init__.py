@@ -1,0 +1,2 @@
+# modules
+from Fasta import *

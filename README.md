@@ -28,9 +28,22 @@ make
 export PYTHONPATH=$PYTHONPATH:/path_to_RNAmotifs_root_folder
 ```
 
+- Download *twoBitToFa* from http://hgdownload.cse.ucsc.edu/admin/exe and place it in the folder path_to_RNAmotifs_root_folder/m3_light/genomes
+
+
+
+## Usage
+
+- The list of alternative spliced exons should be provided in a semicolon-delimeted file containing:
+
+row_id;second_id;chrom;strand;upstream_exon_end_position;exon_start_position;exon_end_position;dwstream_exon_start_position;diRank
+
+- Download the fasta sequence of your genome of interest. Follow the intructions provided in (m3_light/genomes/hg19.download.sh), or in (m3_light/genomes/hg19.download.sh)
+
 ## Contributors
 
-RNAmotifs has been designed by Dr *Matteo Cereda* and Prof Jernej Ule. 
+RNAmotifs has been designed by Dr **Matteo Cereda** and Prof **Jernej Ule**. 
+
 Main developer: Matteo Cereda. Contributing developers Dr Gregor Rot and Dr Uberto Pozzoli.
 
 Contributions are always welcome!
