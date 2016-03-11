@@ -34,7 +34,6 @@ cp $N_config $R_config
 echo "search=N" >> $N_config
 echo "search=R" >> $R_config
 
-
 # prepare non-overlapping regions from splicing file
 
 cd $RNAmotifs/
@@ -70,6 +69,9 @@ cp m3_light/results/$result_dir/motifs.final/pth_0.5/R* tetramers/$result_dir/r
 
 
 # counting tetramer occurences in the genome
+
+# couting: count the number of exons with tetramer occurrencies in the region of interest r1,r2,r3
+# tetramer: calculate the positional specific tetramer occurrences along the RNA splicing map
 
 mkdir results
 mkdir results/$result_dir
