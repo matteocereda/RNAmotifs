@@ -1,7 +1,7 @@
 ## RNAmotifs v.2.0 ##
 
 
-This is the version 2.0 of [RNAmotifs](http://genomebiology.biomedcentral.com/articles/10.1186/gb-2014-15-1-r20]).
+This is the version 2.0 of [RNAmotifs](http://genomebiology.biomedcentral.com/articles/10.1186/gb-2014-15-1-r20).
 
 RNAmotifs is an integrated *R, python, C++* software that evaluates the sequence around differentially regulated alternative exons to identify clusters of short sequences, referred to as multivalent RNA motifs, bound by RNA-binding result_dirs. From a list of alternatively spliced exons, RNAmotifs identifies clusters of short non-degenerate or degenerate tetramers that are enriched at specific positions around the enhanced and silenced exons. Moreover, RNAmotifs generates the RNA splicing map of entiched motifs. RNAmotifs has been successfully used for the identification of multivalent RNA motifs bound by RNA-binding result_dirs such as NOVA, PTBP1, hnRNP C, TARDBP, and TIA1 and TIAL1.
 
@@ -32,8 +32,6 @@ export PYTHONPATH=$PYTHONPATH:/path_to_RNAmotifs_root_folder
 
 - Download *twoBitToFa* from http://hgdownload.cse.ucsc.edu/admin/exe it in the m3_light/genomes
 
-
-
 ## Usage
 
 - The list of alternative spliced exons should be provided in a semicolon-delimeted file containing:
@@ -47,11 +45,16 @@ cd genomes
 ./mm9.download.sh
 ./hg19.download.sh
 ```
--  change back to root folder, set required variables in (RNAmotifs.sh)  and run the analysis:
+-  change back to root folder, set required variables in (RNAmotifs.sh) and run the analysis:
 
 ```
 ./RNAmotifs.sh
 ```
+
+## Examples
+
+In the folder "examples" you can find a list of alternative spliced exons in NOVA1/NOVA2 knockout mouse that have been used in [our publication](http://genomebiology.biomedcentral.com/articles/10.1186/gb-2014-15-1-r20)
+
 
 ## Contributors
 
