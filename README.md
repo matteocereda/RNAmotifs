@@ -3,7 +3,9 @@
 
 This is the version 2.0 of [RNAmotifs](http://genomebiology.biomedcentral.com/articles/10.1186/gb-2014-15-1-r20]).
 
-RNAmotifs is an integrated *R, python, C++ software* that evaluates the sequence around differentially regulated alternative exons to identify clusters of short sequences, referred to as multivalent RNA motifs, bound by RNA-binding proteins. From a list of alternatively spliced exons, RNAmotifs identifies clusters of short non-degenerate or degenerate tetramers that are enriched at specific positions around the enhanced and silenced exons. Moreover, RNAmotifs generates the RNA splicing map of entiched motifs. RNAmotifs has been successfully used for the identification of multivalent RNA motifs bound by RNA-binding proteins such as NOVA, PTBP1, hnRNP C, TARDBP, and TIA1 and TIAL1.
+RNAmotifs is an integrated *R, python, C++* software that evaluates the sequence around differentially regulated alternative exons to identify clusters of short sequences, referred to as multivalent RNA motifs, bound by RNA-binding proteins. From a list of alternatively spliced exons, RNAmotifs identifies clusters of short non-degenerate or degenerate tetramers that are enriched at specific positions around the enhanced and silenced exons. Moreover, RNAmotifs generates the RNA splicing map of entiched motifs. RNAmotifs has been successfully used for the identification of multivalent RNA motifs bound by RNA-binding proteins such as NOVA, PTBP1, hnRNP C, TARDBP, and TIA1 and TIAL1.
+
+![NOVA](examples/NOVA.png)
 
 RNAmotifs is based on [GeCo++](http://bioinformatics.oxfordjournals.org/content/27/9/1313.long), a C++ class library that provides a class hierarchy for the development of bioinformatic algorithm when annotations of genomic elements (e.g. binding sites, mutations) to sequences are taken into account. GeCo++ is available @ http://bioinformatics.emedea.it/geco/
 
@@ -40,9 +42,6 @@ row_id;second_id;chrom;strand;upstream_exon_end_position;exon_start_position;exo
 
 - Download the fasta sequence of your genome of interest. Follow the intructions in (m3_light/genomes/hg19.download.sh), or in (m3_light/genomes/hg19.download.sh)
 
-## Examples 
-
-![NOVA](examples/NOVA.png)
 
 ## Contributors
 
