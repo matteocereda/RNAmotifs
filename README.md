@@ -1,9 +1,7 @@
-## RNAmotifs v.2.0 ##
+## RNAmotifs ##
 
 
-This is the version 2.0 of [RNAmotifs](http://genomebiology.biomedcentral.com/articles/10.1186/gb-2014-15-1-r20).
-
-RNAmotifs is an integrated *R, python, C++* software that evaluates the sequence around differentially regulated alternative exons to identify clusters of short sequences, referred to as multivalent RNA motifs, bound by RNA-binding result_dirs. From a list of alternatively spliced exons, RNAmotifs identifies clusters of short non-degenerate or degenerate tetramers that are enriched at specific positions around the enhanced and silenced exons. Moreover, RNAmotifs generates the RNA splicing map of entiched motifs. RNAmotifs has been successfully used for the identification of multivalent RNA motifs bound by RNA-binding result_dirs such as NOVA, PTBP1, hnRNP C, TARDBP, and TIA1 and TIAL1.
+[RNAmotifs](http://genomebiology.biomedcentral.com/articles/10.1186/gb-2014-15-1-r20) is an integrated *R, python, C++* software that evaluates the sequence around differentially regulated alternative exons to identify clusters of short sequences, referred to as multivalent RNA motifs, bound by RNA-binding result_dirs. From a list of alternatively spliced exons, RNAmotifs identifies clusters of short non-degenerate or degenerate tetramers that are enriched at specific positions around the enhanced and silenced exons. Moreover, RNAmotifs generates the RNA splicing map of entiched motifs. RNAmotifs has been successfully used for the identification of multivalent RNA motifs bound by RNA-binding result_dirs such as NOVA, PTBP1, hnRNP C, TARDBP, and TIA1 and TIAL1.
 
 ![NOVA](examples/NOVA.png)
 
