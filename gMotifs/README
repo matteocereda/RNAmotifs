@@ -1,0 +1,29 @@
+To run executables you will need :
+
+1. 2 sub-directories in your working directory called:
+
+	- splicing_change/ with files containing the list of alterative spliced exons
+
+	- tetramers/BED/ containing 2 other sub-folders named: "data-of-analyses"_"species"_["redundant-RSYW"/"not-redundant"]
+		i.e.	tetramers/BED/20130929_hg19_redundant-RSYK/
+				tetramers/BED/20130929_hg19_not-redundant/
+
+		Each of these foldes must contain a directory percent_0.5/
+		
+2. the splicing_change file has this format:
+
+		row_id;second_id;chrom;strand;upstream_exon_end_position;exon_start_position;exon_end_position;dwstream_exon_start_position;diRank
+
+	(row_id and second_id will not be used in the analyses)
+
+3. Run ./counting splicing_change_filename -s species -p protein -t type[redundat/not_redundat] -d date_of_analyses
+	
+	i.e ./counting  splicing_change_filename -shg19 -pPTB -tR -d20130929
+	
+
+4. Run ./tetramer splicing_change_filename -s species -p protein -t type[redundat/not_redundat] -d date_of_analyses
+	
+	i.e ./tetramer  splicing_change_filename -shg19 -pPTB -tR -d20130929
+	 
+
+
