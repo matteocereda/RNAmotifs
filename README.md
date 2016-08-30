@@ -30,6 +30,11 @@ export PYTHONPATH=$PYTHONPATH:/path_to_RNAmotifs_root_folder
 
 - Download *twoBitToFa* from http://hgdownload.cse.ucsc.edu/admin/exe it in the m3_light/genomes
 
+```
+cd m3_light/genomes
+chmod 775 twoBitToFa
+```
+
 ## Usage
 
 - The list of alternative spliced exons should be provided in a semicolon-delimeted file containing:
