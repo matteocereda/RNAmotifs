@@ -18,14 +18,18 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 #include "inc.h"
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+
 
 void options::defaults() {
  mouse    = false;
  search   = string("");
  protein  = string("");
  date     = string("");
- date_bed = string("");
- percent  = string("");
  dIRZ            = 0.1;
  dIRO            = 1;
  regions[0]      = 1000;
@@ -36,15 +40,8 @@ void options::defaults() {
  inIntron        = 200;
  mlen            = 0;
  microarray_rows = 0;
-
-// *** SET THE CORRECT PATH TO THE WORKING DIRECTORY *******
- path                 = string("./");
-// *********************************************************
-	
- path_splicing_change = path+string("splicing_change/");
- tetramers            = string("tetramers/BED/");
- path_fbed            = string("tetramers/BED/");
- dir                  = string("/");
+ path_splicing_change = string("");
+ tetramers       = string("");
 }
 
 options::options() {
@@ -53,20 +50,14 @@ options::options() {
 
 void options::print(ostream & out) {
  cout << "Mouse:        " << mouse << endl;
- cout << "Protein:      " << protein<< endl;
+ cout << "Analysis folder:      " << protein<< endl;
  cout << "Search RSYW:  " << search << endl;
- cout << "date:         " << date << endl;
- cout << "date_bed:     " << date_bed << endl;
  cout << "dIRZ:         " << dIRZ << endl;
  cout << "dIRO:         " << dIRO << endl;
  cout << "inExon:       " << inExon << endl;
  cout << "inIntron:     " << inIntron << endl;
- cout << "Path:         " << path << endl;
  cout << "Path SP:      " << path_splicing_change << endl;
  cout << "Path Tetra:   " << tetramers << endl;
- cout << "Paht Bed:     " << path_fbed << endl;
- cout << "Dir:          " << path_fbed << endl;
- cout << "Percent:      " << percent << endl;
  cout << "Array rows:   " << microarray_rows << endl << endl;
  cout << "Motif Length: " << mlen << endl;
 }
@@ -74,31 +65,14 @@ void options::print(ostream & out) {
 options::options(int argc,char *argv[]) {
  defaults();
  AnyOption opt;
- opt.addUsage( "tetramer splicing_change_filename" );
+ opt.addUsage( "tetramer " );
  opt.addUsage( "Usage: " );
  opt.addUsage( "" );
  opt.addUsage( " -h  --help             Prints this help " );
- opt.addUsage( " -s  --species          Mouse[M], Human[H]" );
- opt.addUsage( " -p  --protein          Protein Name" );
- opt.addUsage( " -t  --type             Search type: Redundant RSWy[R], Not Redundant[N], Single Hits[S], Single Hits RSWY[SR]" );
- opt.addUsage( " -d  --date             Date of experiment[YYYYMMDD]" );
- opt.addUsage( " -b  --date-bed         Date of bed files[YYYYMMDD]" );
- opt.addUsage( " -z  --dIrank-zero      DIrank threshold for control exons" );
- opt.addUsage( " -a  --dIrank-alt       DIrank threshold for alternative exons" );
- opt.addUsage( " -l  --motif-length     Motif Length" );
- opt.addUsage( " -w  --working-dir      Working Directory" );
+ opt.addUsage( " -c  --config-file      Read configuration file" );
 	
  opt.addUsage( "" );
-
- opt.setOption( "species", 's');
- opt.setOption( "protein", 'p' );
- opt.setOption( "motifs-length", 'l');
- opt.setOption( "type", 't');
- opt.setOption( "date", 'd');
- opt.setOption( "date-bed", 'b');
- opt.setOption( "dIrank-zero", 'z');
- opt.setOption( "dIrank-alt", 'a');
- opt.setOption( "working-dir", 'w');
+ opt.setOption( "config-file", 'c');
 
  opt.setFlag(  "help", 'h' );
 
@@ -106,37 +80,46 @@ options::options(int argc,char *argv[]) {
 
  if ( ! opt.hasOptions()) opt.printUsage();
  if ( opt.getFlag( "help" ) || opt.getFlag( 'h' ) ) opt.printUsage();
+ if( opt.getValue( 'c' ) != NULL  || opt.getValue( "config-file" ) != NULL  ){
+  
+  	ifstream in(opt.getValue( 'c' ));
+  	
+  	  if(in.is_open()){
+  	  		string line;
+  	  		int i = 0;
+   			while(getline(in,line)){
+   				cout << line.c_str() << endl;
+   				string param = line.substr(line.find("=")+1,line.length());
+				cout << param.c_str() << endl;
+				if(i==0){
+					if(strcmp(param.c_str(),"Mouse")==0) mouse=true;
+				} else if (i==1){
+					path_splicing_change = param;
+				} else if (i==2){
+					tetramers = param;
+				} else if (i==3){
+					protein=param;
+				} else if (i==4){
+					search=param;
+				}
+				
+   				i++;
+   			}
+			  if (search.compare("R")==0){
+					tetramers = tetramers + string("/r/");	
+					protein   = protein + string("/r/");
+			  }else if (search.compare("N")==0) {
+				   tetramers = tetramers + string("/nr/");
+				   protein   = protein + string("/nr/");
+			}
 
- if( opt.getValue( 's' ) != NULL  || opt.getValue( "species" ) != NULL  ) if(strcmp(opt.getValue( 's' ),"M")==0) mouse=true;
- if( opt.getValue( 't' ) != NULL  || opt.getValue( "type" ) != NULL  )         search = string(opt.getValue( 't' ));
- if( opt.getValue( 'p' ) != NULL  || opt.getValue( "protein" ) != NULL  )      protein = string(opt.getValue( 'p' ));
- if( opt.getValue( 'c' ) != NULL  || opt.getValue( "percent" ) != NULL  )      percent = string(opt.getValue( 'c' ));
- if( opt.getValue( 'd' ) != NULL  || opt.getValue( "date" ) != NULL  )         date = string(opt.getValue( 'd' ));
- if( opt.getValue( 'b' ) != NULL  || opt.getValue( "date-bed" ) != NULL  )     date_bed = string(opt.getValue( 'b' ));
- else                                                                          date_bed = date;
- if( opt.getValue( 'z' ) != NULL  || opt.getValue( "dIrank-zero" ) != NULL  )  dIRZ = atof(opt.getValue( 'z' ));
- if( opt.getValue( 'a' ) != NULL  || opt.getValue( "dIrank-alt" ) != NULL  )   dIRO = atof(opt.getValue( 'a' ));
- if( opt.getValue( 'l' )!=NULL || opt.getValue( "motif-length" ) != NULL)      mlen = atoi(opt.getValue( 'l' ));
- if( opt.getValue( 'w' ) != NULL  || opt.getValue( "working-dir" ) != NULL  )  path = string(opt.getValue( 'w' ));
-
- path_splicing_change = path+string("splicing_change/");
-
- string db = (mouse)?("-mm9"):("-hg19");
- if (search.compare("R")==0){
-   tetramers = tetramers + date_bed + db + string("-redundant-RSYW");
-   dir       = dir + date + string("-STATS-REDUNDANT-RSYW/");
- }else if (search.compare("N")==0) {
-   tetramers = tetramers + date_bed + db + string("-not-redundant");
-   dir       = dir + date + string("-STATS-NOT-REDUNDANT/");
- } else if (search.compare("S")==0){
-   tetramers = tetramers + date_bed + db + string("-single-hits-")+opt.getValue( 'l' )+string("-mers");
-   dir       = dir + date + string("-SINGLE-HITS-")+opt.getValue( 'l' )+string("/");
- } else if (search.compare("SR")==0){
-   tetramers = tetramers + date_bed + db + string("-single-hits-RSWYKM-")+opt.getValue( 'l' )+string("-mers");
-   dir       = dir + date + string("-SINGLE-HITS-RSWYKM-")+opt.getValue( 'l' )+string("/");
- }
- path_fbed = tetramers + string("/");
- microarray_rows = (mouse)?(32874):(53624);
+			 int ret = mkdir(protein.c_str(),0775);
+			 microarray_rows = (mouse)?(32874):(53624);
+  			
+  		}else {
+  			cout << "invalid configuration file" << endl;
+  		}
+  }
 }
 
 //------------------------------------------------------
@@ -576,87 +559,6 @@ int EM_clip_microarray_CE(options &opt,const char *sp_fname,const char *bed_fnam
  return 0;
 }
 
-
-int get_exon_coordinates(options &opt,const char *sp_fname, const char *output_fname){
-	try{
-		ifstream in(sp_fname);
-		ofstream fout(output_fname);
-		string line,f;
-		fout << "chrom\tstart\tend\tstrand\tregion\ttype\trowID\n"; 
-
-		if(in.is_open()){
-			
-			while(getline(in,f)){  // read splicing change lines and evaluate bed positions
-				
-				/*----------------------------
-				 LOADING EXON
-				 -----------------------------*/
-				gString spline=f; 
-				
-				vector<gString> pars;
-				spline.split(';',pars);
-				string       chr        = string(pars[2]);
-				string       strand     = string(pars[3]);
-				bool         forw       = (string(pars[3]).compare("+")==0)?(true):(false);
-				unsigned int rowID      = atoi(string(pars[1]).c_str()),
-				in_start   = atoi(string(pars[5]).c_str()),
-				in_stop    = atoi(string(pars[6]).c_str());
-				double       dIRank     = atof(string(pars[8]).c_str());
-				
-				unsigned int exon_region1_stop   = in_start + 30,
-							 exon_region2_start  = in_stop  - 30,
-							 exon_middle         = in_start + round((in_stop-in_start)/2);
-				
-				int cofc = 2;
-				if((-opt.dIRZ)<=dIRank && dIRank<=opt.dIRZ){
-					cofc = 0;
-				}else if(dIRank>=opt.dIRO){
-					cofc = 1;
-				}else if(dIRank<=(-opt.dIRO)){
-					cofc= -1;
-				}
-				
-				/*----------------------------
-				 updating regions boundaries
-				 -----------------------------*/
-				
-				if( exon_middle < exon_region1_stop )  exon_region1_stop  = exon_middle;
-				if( exon_middle > exon_region2_start ) exon_region2_start = exon_middle;
-				
-				if(forw){
-	
-					
-					fout << chr.c_str() << "\t" << in_start - 35 << "\t" << in_start - 5 << "\t" << strand.c_str() << "\t" << 1 << "\t" << cofc << "\t" <<rowID << "\n";
-					fout << chr.c_str() << "\t" << in_start << "\t" << exon_region1_stop << "\t" << strand.c_str()  << "\t" << 2 << "\t" << cofc << "\t" <<rowID << "\n";
-					fout << chr.c_str() << "\t" << exon_region2_start << "\t" << in_stop << "\t" << strand.c_str()  << "\t" << 2 << "\t" << cofc << "\t" <<rowID << "\n";
-					fout << chr.c_str() << "\t" << in_stop  + 10 << "\t" << in_stop  + 40 << "\t" << strand.c_str()  << "\t" << 3 << "\t" << cofc << "\t" <<rowID << "\n";
-					
-					
-				}else {
-	
-					fout << chr.c_str() << "\t" << in_stop + 10 << "\t" << in_stop +40 << "\t" << strand.c_str() << "\t" << 1 << "\t" << cofc << "\t" <<rowID << "\n";
-					fout << chr.c_str() << "\t" << in_start << "\t" << exon_region1_stop << "\t" << strand.c_str()  << "\t" << 2 << "\t" << cofc << "\t" <<rowID << "\n";
-					fout << chr.c_str() << "\t" << exon_region2_start << "\t" << in_stop << "\t" << strand.c_str()  << "\t" << 2 << "\t" << cofc << "\t" <<rowID << "\n";
-					fout << chr.c_str() << "\t" << in_start -35 << "\t" << in_start -5 << "\t" << strand.c_str()  << "\t" << 3 << "\t" << cofc << "\t" <<rowID << "\n";
-					
-				}
-			}	
-			
-		}else cout << "Impossible open data file: "<< sp_fname << endl;
-	}catch(gException &e){
-		cout << e.what() << endl;
-	}catch(...){ 
-		cout <<"\tException";
-	}
-	return 0;
-}
-
-void print_exon_coordindates(options &opt, string &splicing_fname, string &fout){
-	//string splicing_fname = opt.path_splicing_change + splicing_change;
-	//string fout           = opt.path + opt.protein + string("/region_coordinates.tab");
-	get_exon_coordinates(opt,splicing_fname.c_str(),fout.c_str());
-}
-
 int count_per_regions(options &opt,const char *sp_fname,const char *bed_fname, const char *output_fname){
 	try{
 		ifstream in(sp_fname), fbed(bed_fname);
@@ -767,43 +669,27 @@ int count_per_regions(options &opt,const char *sp_fname,const char *bed_fname, c
 	return 0;
 }
 
-int counting_per_region(options &opt, string &splicing_change, string &percent){
+int counting_per_region(options &opt){
 	
-	/*-------------------------------
-	 RUN ANALISYS
-	 -------------------------------*/
-	string folder  = opt.path + opt.protein + opt.dir,
-	command = string("mkdir -m 7int ")+ folder ;
+	string folder  = opt.protein,		
+		   command = string("wc -l ") + opt.tetramers + string("*.bed > ") + opt.tetramers + string("tetramers_files.txt");
 	
-	cout << command << endl;
 	system(command.c_str());
 	
-	command = string("mkdir -m 775 ")+ folder + percent;
-	cout << command << endl;
-	system(command.c_str());
-	
-	
-	command = string("wc -l ")+ opt.path + opt.path_fbed + percent + string("*.bed > ") + opt.path + opt.path_fbed + percent + string("tetramers_files.txt");
-	system(command.c_str());
-	
-	
-	string fin = opt.path + opt.tetramers + string("/") + percent + string("tetramers_files.txt");
+	string fin = opt.tetramers + string("tetramers_files.txt");
 	
 	cout << fin.c_str() << endl;
 	
 	ifstream in(fin.c_str());
 	
-	
 	if(in.is_open()){ // load tetramers bed file in the folder
 		
 		unsigned int rows_bed;
 		string bed_fname, output_fname,
-		splicing_fname = opt.path_splicing_change + splicing_change,
-		filelist_name  = folder + percent + string("filelist_count.tsv");
-		
+		splicing_fname = opt.path_splicing_change,
+		filelist_name  = folder + string("filelist_count.tsv");
 		
 		ofstream filelist(filelist_name.c_str());
-		
 		
 		while(!in.eof()){ // load single tet bed file
 			
@@ -813,7 +699,7 @@ int counting_per_region(options &opt, string &splicing_change, string &percent){
 				string tet_name = bed_fname.substr(p1+1).substr(0,4);
 				if(bed_fname.substr(p1+1).compare("totale")!=0){
 					
-					string fout = opt.path + opt.protein + opt.dir + percent + tet_name.c_str() + string("_region_count.tsv");
+					string fout =  opt.protein + tet_name.c_str() + string("_region_count.tsv");
 					
 					count_per_regions(opt,splicing_fname.c_str(),bed_fname.c_str(),fout.c_str());
 					
@@ -829,62 +715,27 @@ int counting_per_region(options &opt, string &splicing_change, string &percent){
 	return 0;
 }
 
-int tetramer(options &opt, string &splicing_change, string &percent){	 
+int tetramer(options &opt){	 
 	/*-------------------------------
 	 
 	 RUN ANALISYS
 	 
 	 -------------------------------*/
 	int ret = 0;
-	string folder  = opt.path + opt.protein + opt.dir,
-	command = string("mkdir -m 775 ")+ folder ;
 	
-	cout << command << endl;
-	
-	system(command.c_str());
-	
-	if(opt.search.compare("S")==0 || opt.search.compare("SR")==0){
-		cout << "Single Hits Search..." << endl;
-		command = string("wc -l ")+ opt.path + opt.tetramers+ string("/*.bed > ") + opt.path + opt.tetramers + string("/tetramers_files.txt");
+	string folder  =  opt.protein ,
+		command = string("wc -l ") + opt.tetramers + string("*.bed > ") + opt.tetramers + string("tetramers_files.txt");
+
 		system(command.c_str());
-		string   fin = opt.path + opt.tetramers + string("/tetramers_files.txt");
-		ifstream in(fin.c_str());
-		if(in.is_open()){
-			unsigned int rows_bed;
-			string       bed_fname, output_fname,
-			splicing_fname = opt.path_splicing_change + splicing_change,
-			filelist_name  = folder + string("filelist.txt"),
-			stats_name     = folder + string("STATS.txt");
-			ofstream     filelist(filelist_name.c_str()),stats(stats_name.c_str());
-			while(!in.eof()){
-				in >> rows_bed >> bed_fname;
-				if(bed_fname.compare("total")!=0){
-					size_t p1       = bed_fname.find_last_of('/');
-					string tet_name = bed_fname.substr(p1+1).substr(0,opt.mlen);
-					if(bed_fname.substr(p1+1).compare("totale")!=0){
-						string fout = folder + bed_fname.substr(p1+1).c_str();
-						ret = EM_clip_microarray_CE(opt,splicing_fname.c_str(),bed_fname.c_str(),fout.c_str(),tet_name.c_str(),stats);
-						filelist << bed_fname.substr(p1+1).c_str() << endl;
-						
-					}
-				}
-			}
-		}else cout << "impossible opening file" << endl;
-		in.close();
-	}else{
-		command = string("mkdir -m 775 ")+ folder + percent;
-		cout << command << endl;
-		system(command.c_str());
-		command = string("wc -l ")+ opt.path + opt.path_fbed + percent + string("*.bed > ") + opt.path + opt.path_fbed + percent + string("tetramers_files.txt");
-		system(command.c_str());
-		string fin = opt.path + opt.tetramers + string("/") + percent + string("tetramers_files.txt");
+
+		string fin =  opt.tetramers + string("tetramers_files.txt");
 		ifstream in(fin.c_str());
 		
 		if(in.is_open()){
 			string bed_fname, output_fname,
-			splicing_fname = opt.path_splicing_change + splicing_change,
-			stats_name     = folder + percent + string("STATS.txt"),
-			filelist_name  = folder + percent + string("filelist.txt");
+			splicing_fname = opt.path_splicing_change ,
+			stats_name     = folder + string("STATS.txt"),
+			filelist_name  = folder + string("filelist.txt");
 			
 			unsigned int rows_bed;
 			cout << stats_name << endl;
@@ -897,7 +748,7 @@ int tetramer(options &opt, string &splicing_change, string &percent){
 					string tet_name = bed_fname.substr(p1+1).substr(0,4);
 					if(bed_fname.substr(p1+1).compare("totale")!=0){
 						
-						string fout = opt.path + opt.protein + opt.dir + percent + bed_fname.substr(p1+1).c_str();
+						string fout = opt.protein + bed_fname.substr(p1+1).c_str();
 						
 						ret = EM_clip_microarray_CE(opt,splicing_fname.c_str(),bed_fname.c_str(),fout.c_str(),tet_name.c_str(),stats);
 						
@@ -908,7 +759,6 @@ int tetramer(options &opt, string &splicing_change, string &percent){
 			}
 		}else cout << "impossible opening file" << endl;
 		in.close();
-	}
 	return ret;
 }
 

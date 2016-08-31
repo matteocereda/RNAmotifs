@@ -35,8 +35,11 @@
 
 #include "geco_base.h"
 #include <math.h>
-#include <string.h>
+#include <string>
 #include <vector>
+#include <memory.h>
+
+using namespace std;
 
 namespace geco {
 

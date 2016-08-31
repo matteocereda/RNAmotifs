@@ -18,7 +18,8 @@
  *   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
  ***************************************************************************/
 #include "geco_base.h"
-#include <string.h>
+//#include <string.h>
+#include <cstring>
 
 namespace geco {
 //--------------------------------------------------------------------------

@@ -18,12 +18,12 @@ To run executables you will need :
 
 3. Run ./counting splicing_change_filename -s species -p protein -t type[redundat/not_redundat] -d date_of_analyses
 	
-	i.e ./counting  splicing_change_filename -shg19 -pPTB -tR -d20130929
+	i.e ./counting  splicing_change_filename -sH -pPTB -tR -d20130929
 	
 
 4. Run ./tetramer splicing_change_filename -s species -p protein -t type[redundat/not_redundat] -d date_of_analyses
 	
-	i.e ./tetramer  splicing_change_filename -shg19 -pPTB -tR -d20130929
+	i.e ./tetramer  splicing_change_filename -sH -pPTB -tR -d20130929
 	 
 
 

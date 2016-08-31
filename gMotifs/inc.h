@@ -28,14 +28,14 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
-#include <string.h>
+#include <string>
 #include <sstream>
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
 #include <fstream>
 #include <typeinfo>
-
+#include <memory.h>
 #include <vector>
 #include <exception>
 
@@ -49,25 +49,19 @@ int splita(char *original, char * split1, char * split2);
 int splitb(char *original, char * split1, char * split2);
 int compare_ints( int a, int b );
 
-
 class options {
 public:
     bool         mouse;
     string       search;
     string       protein;
     string       date;
-    string       date_bed;
     double       dIRZ;
     double       dIRO;
     unsigned int regions[4];
     unsigned int inExon;
     unsigned int inIntron;
-    string       path;
     string       path_splicing_change;
     string       tetramers;
-    string       path_fbed;
-    string       dir;
-    string       percent;
     double        mlen;
     unsigned int microarray_rows; // mouse 32874 human 53624
     options();
@@ -81,7 +75,6 @@ public:
     bool         mouse;
     double        mlen;
     string       date;
-    string       date_bed;
     string       path;
     string       tetramers;
     string       search;
@@ -152,15 +145,12 @@ void dIrank(vector<bln> bedexp, options opt, vector <windows> &wins);
 
 int  EM_clip_microarray_CE(options &opt,const char *sp_fname,const char *bed_fname, const char *output_fname, const char * tet_name, ofstream &stats);
 
-int tetramer(options &opt, string &splicing_change, string &percent);
+int tetramer(options &opt);
 
-int counting_per_region(options &opt, string &splicing_change, string &percent);
+int counting_per_region(options &opt);
 
 int count_per_regions(options &opt,const char *sp_fname,const char *bed_fname, const char *output_fname);
 
-int get_exon_coordinates(options &opt,const char *sp_fname, const char *output_fname);
-
-void print_exon_coordindates(options &opt, string &splicing_fname, string &fout);
 
 template <class T> ostream & operator << (ostream & out, const gArray<T> & array) {
  size_t lfield;

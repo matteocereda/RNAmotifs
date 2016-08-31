@@ -19,7 +19,7 @@
  ***************************************************************************/
 
 #include "geco_array.h"
-#include <string.h>
+//#include <string.h>
 
 using namespace std;
 using namespace geco;

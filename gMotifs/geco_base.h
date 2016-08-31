@@ -33,6 +33,7 @@
 #include <math.h>
 #include <exception>
 #include <string>
+#include <memory.h>
 
 namespace geco {
 
