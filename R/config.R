@@ -143,7 +143,7 @@ getNApos = function( pos ){
 # ------------------
 
 getTables = function(protein,place,tets){
-  print(place)
+  # print(place)
   res = list()
   filelist = read.delim(paste(protein,place,"filelist.txt",sep="",coll=""),header=F,stringsAsFactors=F)[,1] 
   overlap  = pmatch(tets,filelist) 
