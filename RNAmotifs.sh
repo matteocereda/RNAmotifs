@@ -3,21 +3,32 @@
 
 # Before running this script, please adjust folders (paths) in the r.config and n.config files.
 
-RNAmotifs="." # SET THE ABSOLUTE PATH TO RNAMOTIFS FOLDER
+# SET THE ABSOLUTE PATH TO RNAMOTIFS FOLDER
+RNAmotifs=$1 # SET THE ABSOLUTE PATH TO RNAMOTIFS FOLDER
 
-result_dir="NOVA"
+cd $RNAmotifs
 
-splicing_change_infile=$RNAmotifs/examples/NOVA.txt
+export PYTHONPATH=$RNAmotifs
 
-N_config=$RNAmotifs/examples/n.config
+# SET THE NAME OF THE RNAMOTIFS RESULTS FOLDER
+result_dir=$2
 
-R_config=$RNAmotifs/examples/r.config
+# SET THE ABSOLUTE PATH TO SPLICING CHANGE PATH
+splicing_change_infile=$RNAmotifs/input/$3
 
-species="mm9" # set species
+species=$4 # set species
 
-organism="Mouse" # either "Mouse" or "Human"
+organism=$5 # either "Mouse" or "Human"
+
+# Run
+# --------------------
+
+N_config="${RNAmotifs}/input/${result_dir}.n.config"
+R_config="${RNAmotifs}/input/${result_dir}.r.config"
 
 # writing gMotifs configuration files
+
+rm $N_config $R_config
 
 if [ ! -f "$N_config" ] ; then
          # if not create the file
@@ -25,7 +36,7 @@ if [ ! -f "$N_config" ] ; then
 fi
 
 echo "organism=$organism" >> $N_config
-echo "$splicing_change_file=$splicing_change_infile" >> $N_config
+echo "splicing_change_file=$splicing_change_infile" >> $N_config
 echo "tetramer_folder=$RNAmotifs/tetramers/$result_dir" >> $N_config
 echo "results_folder=$RNAmotifs/results/$result_dir" >> $N_config
 
@@ -34,11 +45,17 @@ cp $N_config $R_config
 echo "search=N" >> $N_config
 echo "search=R" >> $R_config
 
+cat $N_config
+
+cat $R_config
+
 # prepare non-overlapping regions from splicing file
 
-cd $RNAmotifs/
-
-mkdir m3_light/regions/$result_dir
+if [ -e m3_light/regions/$result_dir ] ; then
+	echo "Dir already present"
+else
+	mkdir m3_light/regions/$result_dir
+fi
 
 python m3_light/regions/prepare_regions.py $splicing_change_infile m3_light/regions/$result_dir/overlapping.tab
 
@@ -49,8 +66,10 @@ rm m3_light/regions/$result_dir/overlapping.tab
 
 # find tetramers in the genome
 
-printf 'import m3_light\nm3_light.find_tetramers('$result_dir', '$species')' | python
-
+echo "import m3_light" > tmp.py
+echo "m3_light.find_tetramers('${result_dir}', '${species}')" >> tmp.py
+python tmp.py
+rm tmp.py
 
 # move results to tetramers folder
 

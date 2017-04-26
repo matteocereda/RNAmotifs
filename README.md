@@ -51,7 +51,13 @@ cd genomes
 -  change back to root folder, set required variables in (RNAmotifs.sh) and run the analysis:
 
 ```
-./RNAmotifs.sh
+./RNAmotifs.sh /absolute/path/to/RNAmotifs project_name splicing_change_filename.txt genome species
+
+Example:
+
+./RNAmotifs.sh /home/mcereda/RNAmotifs NOVA_regulation NOVA_cassette_exons.txt hg19 Human
+
+
 ```
 
 ## Examples
