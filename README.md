@@ -59,6 +59,7 @@ Example:
 
 
 ```
+- To filter results and draw RNA splicing maps follow the steps reported in the following file: R/RNAmaps.R
 
 ## Examples
 
