@@ -575,3 +575,21 @@ from_MATS_to_RNAmotifs = function(exons, fname){
   res = cbind(1:nrow(exons), exons[,cn])
   write.table(res, file=fname, col.names = F, row.names = F, quote = F, sep=";")
 }
+
+create_UCSC_BED_file=function(filename, pout){
+  f = read.delim(filename, header=F)
+  n = gsub(".bed","",sapply(strsplit(filename, "\\/"), function(x) x[length(x)] ))
+  s = ifelse(f[,4]>0,"+","-") 
+  b = cbind(
+    f[1:3]
+    , n
+    , abs(f[,4])
+    , s
+  )
+  fout=paste0(pout, "/",n,".bed")
+  writeLines(
+    paste0('track name=RNAmotifs_',n,' description="RNAmotifs clusters" useScore=1'), fout
+  )
+  write.table(b, file=fout, row.names = F, col.names = F, quote=F, sep="\t", append = T)
+}
+
