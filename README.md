@@ -48,18 +48,18 @@ cd genomes
 ./mm9.download.sh
 ./hg19.download.sh
 ```
--  change back to root folder, set required variables in (RNAmotifs.sh) and run the analysis:
+-  change back to root folder, set required variables in (RNAmotifs.sh) and run the analysis (be carefull in selecting the genome of interest (Human or Mouse)):
 
 ```
 ./RNAmotifs.sh /absolute/path/to/RNAmotifs project_name splicing_change_filename.txt genome species
 
 Example:
 
-./RNAmotifs.sh /home/mcereda/RNAmotifs NOVA_regulation NOVA_cassette_exons.txt hg19 Human
+./RNAmotifs.sh /home/mcereda/RNAmotifs NOVA_regulation NOVA.txt mm9 Mouse
 
 
 ```
-- To filter results and draw RNA splicing maps follow the steps reported in the following file: R/RNAmaps.R
+- To filter results and draw RNA splicing maps follow the steps reported in the following file: R/selection_of_tetramers.R
 
 ## Examples
 
@@ -70,7 +70,7 @@ In the folder "examples" you can find a list of alternative spliced exons in NOV
 
 RNAmotifs has been designed by Dr **Matteo Cereda** and Prof **Jernej Ule**. 
 
-Main developer: Matteo Cereda. 
+Main developer: Matteo Cereda, Marco Del Giudice. 
 
 Contributing developers: Gregor Rot, Peter Juvan and Uberto Pozzoli.
 
