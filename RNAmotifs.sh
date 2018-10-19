@@ -20,7 +20,7 @@ species=$4 # set species
 
 organism=$5 # either "Mouse" or "Human"
 
-p_emp=0.00005
+p_emp=0.0005
 
 p_fisher=0.1
 
