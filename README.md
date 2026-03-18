@@ -657,7 +657,6 @@ Directories created at runtime: `build/`, `input/`, `results/`, `tetramers/`,
 
 Designed by **Matteo Cereda** and **Jernej Ule**.
 Main developer: Matteo Cereda.
-Contributing developers: Gregor Rot, Peter Juvan, Uberto Pozzoli.
 
 ## License
 
