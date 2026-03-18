@@ -18,9 +18,6 @@ results/
 # Uploads (GUI temporary files)
 uploads/
 
-# Claude Code config
-.claude/
-
 # Editor/IDE
 .vscode/
 .idea/
