@@ -1,19 +1,33 @@
-# History files
-.Rhistory
-.Rapp.history
+# Build artifacts
+build/
 
-# Session Data files
-.RData
+# Python bytecode
+__pycache__/
+*.pyc
 
-# Example code in package build process
-*-Ex.R
+# Genome data (large, user-downloaded)
+genomes/mm9/
+genomes/mm10/
+genomes/hg19/
+genomes/hg38/
+genomes/bigWigToBedGraph
 
-# RStudio files
-.Rproj.user/
+# Results (generated at runtime)
+results/
 
-# produced vignettes
-vignettes/*.html
-vignettes/*.pdf
+# Uploads (GUI temporary files)
+uploads/
 
-# OAuth2 token, see https://github.com/hadley/httr/releases/tag/v0.3
-.httr-oauth
+# Claude Code config
+.claude/
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

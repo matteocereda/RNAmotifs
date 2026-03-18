@@ -1,0 +1,670 @@
+#!/usr/bin/env python3
+# RNAmotifs - Main pipeline orchestrator
+# Copyright (C) 2014-2026 Matteo Cereda
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Reference:
+#   Cereda M, Pozzoli U, Rot G, Juvan P, Schweitzer A, Clark T, Ule J.
+#   RNAmotifs: prediction of multivalent RNA motifs that control
+#   alternative splicing. Genome Biol. 2014;15(1):R20.
+
+"""
+RNAmotifs identifies clusters of short RNA motifs (tetramers) enriched at
+specific positions around alternatively spliced exons that are differentially
+regulated (enhanced or silenced) by RNA-binding proteins.
+"""
+
+import argparse
+import os
+import random
+import re
+import shutil
+import subprocess
+import sys
+import textwrap
+import time
+from datetime import date
+
+BANNER = r"""
+ ____  _   _    _                    _   _  __
+|  _ \| \ | |  / \   _ __ ___   ___ | |_(_)/ _|___
+| |_) |  \| | / _ \ | '_ ` _ \ / _ \| __| | |_/ __|
+|  _ <| |\  |/ ___ \| | | | | | (_) | |_| |  _\__ \
+|_| \_\_| \_/_/   \_\_| |_| |_|\___/ \__|_|_| |___/  v2.0
+"""
+
+# ── Progress bar ─────────────────────────────────────────────────────────────
+
+def fmt_time(secs):
+    if secs < 0:
+        return "--:--"
+    m, s = divmod(int(secs), 60)
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m" if h > 0 else f"{m:02d}:{s:02d}"
+
+
+def progress_bar(current, total, label="", width=36, elapsed=0, file=sys.stderr):
+    if total <= 0:
+        return
+    frac = min(current / total, 1.0)
+    filled = int(width * frac)
+    bar = "\u2501" * filled + ("\u2578" if filled < width else "") + \
+          "\u2576" * max(0, width - filled - 1)
+    eta = (elapsed / frac - elapsed) if frac > 0.01 else -1
+    line = (f"\r  {label:<22s} {bar} {frac * 100:5.1f}%  "
+            f"{fmt_time(elapsed)}<{fmt_time(eta)}  [{current}/{total}]   ")
+    file.write(line)
+    if current >= total:
+        file.write("\n")
+    file.flush()
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def find_root():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def find_binary(name, root):
+    for d in [os.path.join(root, "build"),
+              os.path.join(root, "bin"), root]:
+        path = os.path.join(d, name)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    sys.exit(f"Error: cannot find binary '{name}'. Did you run cmake/make?")
+
+
+def step(msg):
+    print(f"\n  --> {msg}")
+
+
+def run(cmd, env=None):
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
+    subprocess.check_call(cmd, shell=True, env=run_env,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def run_with_progress(cmd, total, label="Processing", env=None):
+    """Run a command that emits 'PROGRESS <done> <total>' on stderr."""
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
+    proc = subprocess.Popen(
+        cmd, shell=True, env=run_env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    t0 = time.time()
+    for line in proc.stderr:
+        m = re.match(r"PROGRESS\s+(\d+)\s+(\d+)", line.strip())
+        if m:
+            done = int(m.group(1))
+            progress_bar(done, total, label, elapsed=time.time() - t0)
+    proc.wait()
+    progress_bar(total, total, label, elapsed=time.time() - t0)
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
+
+
+def r_env():
+    r_libs = os.environ.get("R_LIBS_USER",
+                            os.path.expanduser("~/R/library"))
+    return {"R_LIBS_USER": r_libs}
+
+
+def sanitize(val):
+    return str(val).replace(".", "_")
+
+
+def make_run_name(args):
+    parts = [
+        date.today().strftime("%Y%m%d"),
+        args.name,
+        args.genome,
+        f"w{args.half_window}",
+        f"h{args.min_height}",
+        f"pth{sanitize(args.pth)}",
+        f"ew{args.enrichment_window}",
+        f"ie{args.in_exon}",
+        f"ii{args.in_intron}",
+        f"b{args.bootstraps}",
+        f"pf{sanitize(args.p_fisher)}",
+        f"pe{sanitize(args.p_empirical)}",
+    ]
+    return "_".join(parts)
+
+
+def estimate_bootstrap_time(bootstrap_bin, results_parent, run_name, cores):
+    try:
+        result = subprocess.run(
+            f"{bootstrap_bin} {results_parent} {run_name} 3 {cores} --estimate",
+            shell=True, capture_output=True, text=True, timeout=300
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return float(result.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
+class Tee:
+    """Write to both a file and the original stream."""
+    def __init__(self, stream, logfile):
+        self.stream = stream
+        self.log = logfile
+
+    def write(self, data):
+        try:
+            self.stream.write(data)
+        except (ValueError, OSError):
+            pass
+        try:
+            self.log.write(data)
+        except (ValueError, OSError):
+            pass
+
+    def flush(self):
+        try:
+            self.stream.flush()
+        except (ValueError, OSError):
+            pass
+        try:
+            self.log.flush()
+        except (ValueError, OSError):
+            pass
+
+    def isatty(self):
+        return False
+
+
+# ── rMATS SE converter ──────────────────────────────────────────────────────
+
+def convert_rmats_se(rmats_file, output_file,
+                     incl_threshold, constit_threshold,
+                     fdr_threshold, max_constitutive, seed=42):
+    """Convert rMATS SE (Skipped Exon) output to RNAmotifs input format.
+
+    Alternative exons: |IncLevelDifference| >= incl_threshold AND FDR <= fdr_threshold
+      - IncLevelDifference > 0 --> enhanced (dIRank = IncLevelDifference scaled to > 1)
+      - IncLevelDifference < 0 --> silenced (dIRank = IncLevelDifference scaled to < -1)
+
+    Constitutive exons: |IncLevelDifference| <= constit_threshold
+      - dIRank = 0 (control)
+      - If more than max_constitutive, randomly sample max_constitutive
+    """
+    import csv
+
+    enhanced = []
+    silenced = []
+    constitutive = []
+
+    with open(rmats_file) as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for row in reader:
+            try:
+                fdr  = float(row["FDR"])
+                incl = float(row["IncLevelDifference"])
+            except (ValueError, KeyError):
+                continue
+
+            chrom  = row["chr"]
+            strand = row["strand"]
+            exon_start  = row["exonStart_0base"]
+            exon_end    = row["exonEnd"]
+            upstream_ee = row["upstreamEE"]
+            downstream_es = row["downstreamES"]
+            rmats_id = row["ID"]
+
+            entry = {
+                "rmats_id": rmats_id,
+                "chrom": chrom,
+                "strand": strand,
+                "upstream_ee": upstream_ee,
+                "exon_start": exon_start,
+                "exon_end": exon_end,
+                "downstream_es": downstream_es,
+                "incl": incl,
+                "fdr": fdr,
+            }
+
+            abs_incl = abs(incl)
+
+            if abs_incl >= incl_threshold and fdr <= fdr_threshold:
+                if incl > 0:
+                    enhanced.append(entry)
+                else:
+                    silenced.append(entry)
+            elif abs_incl <= constit_threshold:
+                constitutive.append(entry)
+
+    # Subsample constitutive if needed
+    if len(constitutive) > max_constitutive:
+        random.seed(seed)
+        constitutive = random.sample(constitutive, max_constitutive)
+
+    # Write RNAmotifs input format
+    # row_id;second_id;chrom;strand;upstream_exon_end;exon_start;exon_end;downstream_exon_start;dIRank
+    #
+    # dIRank encoding:
+    #   enhanced:    scale |IncLevelDifference| to > 1 (use 1 + abs(incl) * 10)
+    #   silenced:    scale to < -1 (use -(1 + abs(incl) * 10))
+    #   constitutive: 0
+
+    all_exons = []
+    for e in enhanced:
+        dirank = 1.0 + abs(e["incl"]) * 10.0
+        all_exons.append((e, dirank))
+    for e in silenced:
+        dirank = -(1.0 + abs(e["incl"]) * 10.0)
+        all_exons.append((e, dirank))
+    for e in constitutive:
+        all_exons.append((e, 0.0))
+
+    with open(output_file, "w") as f:
+        for idx, (e, dirank) in enumerate(all_exons, 1):
+            f.write(f"{idx};{e['rmats_id']};{e['chrom']};{e['strand']};"
+                    f"{e['upstream_ee']};{e['exon_start']};{e['exon_end']};"
+                    f"{e['downstream_es']};{dirank:.2f}\n")
+
+    return len(enhanced), len(silenced), len(constitutive)
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="rnamotifs",
+        description=textwrap.dedent(__doc__),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("input_file",
+        help="Splicing-change file (RNAmotifs format or rMATS SE with --from-rmats)")
+    parser.add_argument("-n", "--name", required=True,
+        help="Analysis name (e.g. NOVA)")
+    parser.add_argument("-g", "--genome", required=True,
+        choices=["hg19", "hg38", "mm9", "mm10"],
+        help="Reference genome")
+    parser.add_argument("-w", "--half-window", type=int, default=15,
+        help="Half-window for clustering (default: 15)")
+    parser.add_argument("-m", "--min-height", type=int, default=4,
+        help="Minimum cluster height (default: 4)")
+    parser.add_argument("-p", "--pth", type=float, default=0.5,
+        help="Percentage threshold (default: 0.5)")
+    parser.add_argument("-e", "--enrichment-window", type=int, default=30,
+        help="Enrichment window in bp (default: 30)")
+    parser.add_argument("--in-exon", type=int, default=30,
+        help="Region extent into exons in bp (default: 30)")
+    parser.add_argument("--in-intron", type=int, default=300,
+        help="Region extent into introns in bp (default: 300)")
+    parser.add_argument("-b", "--bootstraps", type=int, default=10000,
+        help="Bootstrap iterations (default: 10000)")
+    parser.add_argument("-c", "--cores", type=int, default=1,
+        help="CPU cores (default: 1)")
+    parser.add_argument("--p-fisher", type=float, default=0.1,
+        help="Fisher p-value threshold (default: 0.1)")
+    parser.add_argument("--p-empirical", type=float, default=0.00005,
+        help="Empirical p-value threshold (default: 0.00005)")
+    parser.add_argument("--top-n", type=int, default=0,
+        help="Plot only top N ranked tetramers (default: all)")
+    parser.add_argument("--structure", action="store_true",
+        help="Compute RNA secondary structure profiles for enriched tetramers "
+             "(requires ViennaRNA)")
+    parser.add_argument("--structure-window", type=int, default=31,
+        help="Folding window size for structure profiling (default: 31)")
+    parser.add_argument("--conservation", action="store_true",
+        help="Compute PhyloP conservation profiles for enriched tetramers "
+             "(requires pre-downloaded .phylop.bin files, see genomes/download_phylop.sh)")
+
+    # rMATS input options
+    rmats = parser.add_argument_group("rMATS input (use with --from-rmats)")
+    rmats.add_argument("--from-rmats", action="store_true",
+        help="Input is an rMATS SE.MATS.*.txt file (Skipped Exon)")
+    rmats.add_argument("--rmats-incl", type=float, default=0.1,
+        help="Min |IncLevelDifference| for alternative exons (default: 0.1)")
+    rmats.add_argument("--rmats-fdr", type=float, default=0.05,
+        help="Max FDR for alternative exons (default: 0.05)")
+    rmats.add_argument("--rmats-constit", type=float, default=0.01,
+        help="Max |IncLevelDifference| for constitutive exons (default: 0.01)")
+    rmats.add_argument("--rmats-max-constit", type=int, default=5000,
+        help="Max number of constitutive exons (random sample if exceeded, default: 5000)")
+
+    args = parser.parse_args()
+
+    root = find_root()
+    data_root = root
+    input_file = os.path.abspath(args.input_file)
+    if not os.path.isfile(input_file):
+        sys.exit(f"Error: input file not found: {input_file}")
+
+    organism = "Human" if args.genome.startswith("hg") else "Mouse"
+    run_name = make_run_name(args)
+    results_dir = os.path.join(root, "results", run_name)
+    results_parent = os.path.join(root, "results")
+    os.makedirs(results_dir, exist_ok=True)
+
+    # ── Redirect all output to log in results folder ─────────────────────────
+    log_path = os.path.join(results_dir, "rnamotifs.log")
+    logfile = open(log_path, "w")
+    sys.stdout = Tee(sys.__stdout__, logfile)
+    sys.stderr = Tee(sys.__stderr__, logfile)
+
+    print(BANNER)
+
+    # ── Convert rMATS if requested ───────────────────────────────────────────
+    if args.from_rmats:
+        step("Converting rMATS SE input")
+        converted_file = os.path.join(results_dir, "rnamotifs_input.txt")
+        n_enh, n_sil, n_ctl = convert_rmats_se(
+            input_file, converted_file,
+            incl_threshold=args.rmats_incl,
+            constit_threshold=args.rmats_constit,
+            fdr_threshold=args.rmats_fdr,
+            max_constitutive=args.rmats_max_constit,
+        )
+        print(f"  rMATS SE file   : {input_file}")
+        print(f"  |IncLevel| >= {args.rmats_incl} & FDR <= {args.rmats_fdr}"
+              f"  -->  {n_enh} enhanced, {n_sil} silenced")
+        print(f"  |IncLevel| <= {args.rmats_constit}"
+              f"  -->  {n_ctl} constitutive (max {args.rmats_max_constit})")
+        print(f"  Total exons     : {n_enh + n_sil + n_ctl}")
+        print(f"  Converted to    : {converted_file}")
+        input_file = converted_file
+
+    print(f"""
+  Configuration
+  {'─' * 50}
+  Input file       : {input_file}
+  Analysis name    : {args.name}
+  Genome           : {args.genome} ({organism})
+  Cluster half-win : {args.half_window}
+  Min height       : {args.min_height}
+  Pth              : {args.pth}
+  Enrichment win   : {args.enrichment_window}
+  In-exon          : {args.in_exon}
+  In-intron        : {args.in_intron}
+  Bootstraps       : {args.bootstraps}
+  Cores            : {args.cores}
+  P(Fisher)        : {args.p_fisher}
+  P(Empirical)     : {args.p_empirical}
+  {'─' * 50}
+  Output           : results/{run_name}
+  Log              : results/{run_name}/rnamotifs.log
+  {'─' * 50}""")
+
+    pipeline_t0 = time.time()
+
+    # ── Steps 1-2: Region preparation + tetramer search (C++) ────────────────
+    step("Steps 1-2/6  Regions + tetramer search")
+
+    search_bin = find_binary("rnamotifs_search", root)
+    print(f"  512 motifs, {args.cores} cores (C++/OpenMP)")
+
+    run_with_progress(
+        f"{search_bin} {input_file} {data_root} {args.genome} {args.name} "
+        f"{data_root} {args.half_window} {args.min_height} {args.pth} {args.cores}",
+        total=512,
+        label="Tetramer search"
+    )
+
+    # ── Step 3: Organise into data/ subfolder ────────────────────────────────
+    step("Step 3/6  Organising files")
+
+    data_dir = os.path.join(results_dir, "data")
+    tet_dir = os.path.join(data_dir, "tetramers")
+    counts_dir = os.path.join(data_dir, "counts")
+    for sub in ["nr", "r"]:
+        os.makedirs(os.path.join(tet_dir, sub), exist_ok=True)
+        os.makedirs(os.path.join(counts_dir, sub), exist_ok=True)
+
+    src_dir = os.path.join(data_root, "results", args.name, "motifs.final",
+                           f"pth_{args.pth}")
+    for fname in os.listdir(src_dir):
+        if not fname.endswith(".bed"):
+            continue
+        first = fname[0].upper()
+        if first in "ACTG":
+            dest = os.path.join(tet_dir, "nr", fname)
+        elif first in "RYSW":
+            dest = os.path.join(tet_dir, "r", fname)
+        else:
+            continue
+        shutil.copy2(os.path.join(src_dir, fname), dest)
+
+    # Move search regions into data/
+    search_regions = os.path.join(data_root, "regions", args.name)
+    if os.path.exists(search_regions):
+        dest_regions = os.path.join(data_dir, "regions")
+        if os.path.exists(dest_regions):
+            shutil.rmtree(dest_regions)
+        shutil.move(search_regions, dest_regions)
+        regions_parent = os.path.join(data_root, "regions")
+        if os.path.isdir(regions_parent) and not os.listdir(regions_parent):
+            os.rmdir(regions_parent)
+
+    # Clean up search intermediate motif results
+    search_motifs = os.path.join(data_root, "results", args.name)
+    if os.path.exists(search_motifs):
+        shutil.rmtree(search_motifs)
+
+    print(f"  Data: {data_dir}")
+
+    # ── Step 4: C++ mapping and counting ─────────────────────────────────────
+    step("Step 4/6  Tetramer mapping and counting")
+
+    tetramer_bin = find_binary("rnamotifs_tetramer", root)
+    counting_bin = find_binary("rnamotifs_counting", root)
+
+    for mode in ["N", "R"]:
+        config_path = os.path.join(data_dir, f"config.{mode.lower()}")
+        with open(config_path, "w") as f:
+            f.write(f"organism={organism}\n")
+            f.write(f"splicing_change_file={input_file}\n")
+            f.write(f"tetramer_folder={tet_dir}\n")
+            f.write(f"results_folder={counts_dir}\n")
+            f.write(f"search={mode}\n")
+            f.write(f"enrichment_window={args.enrichment_window}\n")
+            f.write(f"in_exon={args.in_exon}\n")
+            f.write(f"in_intron={args.in_intron}\n")
+
+        print(f"  [{mode}] Tetramer mapping + counting...")
+        run(f"{tetramer_bin} -c {config_path}")
+        run(f"{counting_bin} -c {config_path}")
+
+    # ── Step 5: Bootstrap FDR (C++, OpenMP) ──────────────────────────────────
+    step("Step 5/6  Bootstrap FDR")
+
+    bootstrap_bin = find_binary("rnamotifs_bootstrap", root)
+
+    # Bootstrap reads from counts_dir which has r/ and nr/ with filelist_count.tsv
+    # It expects: <base_dir>/<name>/r/ — so we pass counts_dir's parent and "counts"
+    boot_base = data_dir
+    boot_name = "counts"
+
+    sec_per_iter = estimate_bootstrap_time(
+        bootstrap_bin, boot_base, boot_name, args.cores)
+    if sec_per_iter:
+        est_secs = sec_per_iter * args.bootstraps
+        print(f"  Estimated: ~{fmt_time(est_secs)} "
+              f"({sec_per_iter:.3f}s/iter, {args.cores} cores)")
+
+    run_with_progress(
+        f"{bootstrap_bin} {boot_base} {boot_name} "
+        f"{args.bootstraps} {args.cores}",
+        total=args.bootstraps,
+        label="Bootstrap FDR"
+    )
+
+    # Move bootstrap output to top-level results
+    boot_src = os.path.join(counts_dir, f"bootstrap_{args.bootstraps}.tsv")
+    boot_dst = os.path.join(results_dir, f"bootstrap_{args.bootstraps}.tsv")
+    if os.path.exists(boot_src):
+        shutil.move(boot_src, boot_dst)
+
+    # ── Step 6: Selection & RNA maps ─────────────────────────────────────────
+    step("Step 6/6  Tetramer selection & RNA maps")
+
+    r_dir = os.path.join(root, "src", "R")
+    # selection.R reads bootstrap TSV and filelist from counts_dir
+    # Pass results_dir as wd so it finds bootstrap TSV, and counts_dir for filelists
+    run(f"Rscript {os.path.join(r_dir, 'selection.R')} "
+        f"{results_dir} {args.name} {args.bootstraps} "
+        f"{args.p_fisher} {args.p_empirical} {args.top_n} "
+        f"{counts_dir} {args.in_exon} {args.in_intron}",
+        env=r_env())
+
+    # ── Step 7 (optional): RNA structure profiling ──────────────────────────
+    if args.structure:
+        step("Step 7  RNA structure profiling")
+
+        structure_bin = find_binary("rnamotifs_structure", root)
+
+        # Extract enriched tetramer names from the CSV (preserving order)
+        import glob, csv
+        csvs = glob.glob(os.path.join(results_dir, "MRMs_*.csv"))
+        enriched_tets_file = os.path.join(results_dir, "enriched_tets.txt")
+        order_file = os.path.join(results_dir, "tetramer_order.txt")
+        # tetramer_order.txt is now written by selection.R with correct splicing map order
+
+        # Extract enriched tetramers from CSV
+        enriched_tets = []
+        seen = set()
+        if csvs:
+            with open(csvs[0]) as cf:
+                reader = csv.DictReader(cf)
+                for row in reader:
+                    tet = row.get("tetramer", "")
+                    if row.get("is.sign") == "TRUE" and tet not in seen:
+                        enriched_tets.append(tet)
+                        seen.add(tet)
+
+        if enriched_tets:
+            with open(enriched_tets_file, "w") as f:
+                for t in enriched_tets:
+                    f.write(t + "\n")
+
+            structure_tsv = os.path.join(results_dir, "structure_profile.tsv")
+            structure_pdf = os.path.join(results_dir, "structure_profile.pdf")
+
+            print(f"  {len(enriched_tets)} enriched tetramers, "
+                  f"window={args.structure_window}nt, {args.cores} cores")
+
+            run_with_progress(
+                f"{structure_bin} {input_file} {data_root} {args.genome} "
+                f"{tet_dir} "
+                f"{enriched_tets_file} {structure_tsv} "
+                f"{args.cores} {args.structure_window} {args.in_exon} {args.in_intron}",
+                total=len(enriched_tets),
+                label="Structure profiling"
+            )
+
+            # Plot heatmap
+            enriched_csv = glob.glob(os.path.join(results_dir, "MRMs_*.csv"))[0]
+            run(f"Rscript {os.path.join(r_dir, 'structure_profile.R')} "
+                f"{structure_tsv} {structure_pdf} {order_file} {enriched_csv} "
+                f"{args.in_exon} {args.in_intron}",
+                env=r_env())
+
+            # Cluster summary curves
+            structure_cluster_pdf = os.path.join(results_dir,
+                                                 "structure_cluster_profile.pdf")
+            run(f"Rscript {os.path.join(r_dir, 'cluster_profile.R')} "
+                f"{structure_tsv} {enriched_csv} {structure_cluster_pdf} "
+                f"ss_score \"RNA structure (cluster average)\" "
+                f"{args.in_exon} {args.in_intron}",
+                env=r_env())
+
+            print(f"  Heatmap:  {structure_pdf}")
+            print(f"  Clusters: {structure_cluster_pdf}")
+        else:
+            print("  No enriched tetramers — skipping structure profiling")
+
+    # ── Step (optional): Conservation profiling ─────────────────────────────
+    if args.conservation:
+        step("Conservation profiling (PhyloP)")
+
+        conservation_bin = find_binary("rnamotifs_conservation", root)
+
+        # Reuse enriched tetramers and order from structure step, or extract now
+        if not os.path.exists(os.path.join(results_dir, "enriched_tets.txt")):
+            import glob, csv
+            csvs = glob.glob(os.path.join(results_dir, "MRMs_*.csv"))
+            enriched_tets_file = os.path.join(results_dir, "enriched_tets.txt")
+            order_file = os.path.join(results_dir, "tetramer_order.txt")
+            # tetramer_order.txt written by selection.R
+            enriched_tets = []
+            seen_e = set()
+            if csvs:
+                with open(csvs[0]) as cf:
+                    import csv
+                    reader = csv.DictReader(cf)
+                    for row in reader:
+                        tet = row.get("tetramer", "")
+                        if row.get("is.sign") == "TRUE" and tet not in seen_e:
+                            enriched_tets.append(tet); seen_e.add(tet)
+            with open(enriched_tets_file, "w") as f:
+                for t in enriched_tets: f.write(t + "\n")
+        else:
+            enriched_tets_file = os.path.join(results_dir, "enriched_tets.txt")
+            order_file = os.path.join(results_dir, "tetramer_order.txt")
+            with open(enriched_tets_file) as f:
+                enriched_tets = [l.strip() for l in f if l.strip()]
+
+        if enriched_tets:
+            # Check PhyloP data exists
+            phylop_test = os.path.join(data_root, "genomes", args.genome,
+                                       "chr1.phylop.bin")
+            if not os.path.exists(phylop_test):
+                print(f"  Warning: PhyloP data not found for {args.genome}")
+                print(f"  Run: cd genomes && ./download_phylop.sh {args.genome}")
+            else:
+                cons_tsv = os.path.join(results_dir, "conservation_profile.tsv")
+                cons_pdf = os.path.join(results_dir, "conservation_profile.pdf")
+
+                print(f"  {len(enriched_tets)} enriched tetramers, {args.cores} cores")
+
+                run_with_progress(
+                    f"{conservation_bin} {input_file} {data_root} {args.genome} "
+                    f"{tet_dir} "
+                    f"{enriched_tets_file} {cons_tsv} {args.cores} {args.in_exon} {args.in_intron}",
+                    total=len(enriched_tets),
+                    label="Conservation"
+                )
+
+                # Cluster summary curves
+                import glob as _glob
+                _csvs = _glob.glob(os.path.join(results_dir, "MRMs_*.csv"))
+
+                if _csvs:
+                    run(f"Rscript {os.path.join(r_dir, 'conservation_profile.R')} "
+                        f"{cons_tsv} {cons_pdf} {order_file} {_csvs[0]} "
+                        f"{args.in_exon} {args.in_intron}",
+                        env=r_env())
+                    cons_cluster_pdf = os.path.join(results_dir,
+                                                    "conservation_cluster_profile.pdf")
+                    run(f"Rscript {os.path.join(r_dir, 'cluster_profile.R')} "
+                        f"{cons_tsv} {_csvs[0]} {cons_cluster_pdf} "
+                        f"phylop_score \"Sequence conservation (cluster average)\" "
+                        f"{args.in_exon} {args.in_intron}",
+                        env=r_env())
+                    print(f"  Heatmap:  {cons_pdf}")
+                    print(f"  Clusters: {cons_cluster_pdf}")
+                else:
+                    print(f"  Heatmap: {cons_pdf}")
+        else:
+            print("  No enriched tetramers — skipping conservation profiling")
+
+    # ── Done ─────────────────────────────────────────────────────────────────
+    total_time = time.time() - pipeline_t0
+    print(f"\n  --> RNAmotifs complete")
+    print(f"      Total time: {fmt_time(total_time)}")
+    print(f"      Results: results/{run_name}\n")
+
+    # Restore streams before closing log to avoid cleanup errors
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+    logfile.close()
+
+
+if __name__ == "__main__":
+    main()

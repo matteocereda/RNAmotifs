@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+# RNAmotifs - Extract exon coordinates for enriched tetramers
+# Copyright (C) 2014-2026 Matteo Cereda
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+"""
+Extract genomic coordinates of enhanced and silenced exons where enriched
+tetramers have occurrences in the flanking regions.
+
+Run on a completed RNAmotifs results folder:
+    ./rnamotifs-extract results/<run_name>
+    ./rnamotifs-extract results/<run_name> --tetramer YCAY
+    ./rnamotifs-extract results/<run_name> --tetramer YCAY --category silenced
+"""
+
+import argparse
+import csv
+import os
+import sys
+import textwrap
+
+
+def find_enriched_tetramers(results_dir):
+    """Return list of enriched tetramer names from the CSV."""
+    import glob
+    csvs = glob.glob(os.path.join(results_dir, "MRMs_*.csv"))
+    if not csvs:
+        return []
+    tets = []
+    seen = set()
+    with open(csvs[0]) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            tet = row.get("tetramer", "")
+            if row.get("is.sign") == "TRUE" and tet not in seen:
+                tets.append(tet)
+                seen.add(tet)
+    return tets
+
+
+def read_splicing_file(path):
+    """Read splicing file and return list of exon dicts."""
+    exons = []
+    with open(path) as f:
+        for line in f:
+            cols = line.strip().split(";")
+            if len(cols) < 9:
+                continue
+            dirank = float(cols[8])
+            if dirank >= 1.0:
+                cat = "enhanced"
+            elif dirank <= -1.0:
+                cat = "silenced"
+            else:
+                cat = "control"
+            exons.append({
+                "exon_id": cols[0],
+                "second_id": cols[1],
+                "chrom": cols[2],
+                "strand": cols[3],
+                "upstream_ee": int(cols[4]),
+                "exon_start": int(cols[5]),
+                "exon_end": int(cols[6]),
+                "downstream_es": int(cols[7]),
+                "dirank": dirank,
+                "category": cat,
+            })
+    return exons
+
+
+def read_bed_hits(bed_path):
+    """Read BED file, return list of (chrom, start, end, forward)."""
+    hits = []
+    if not os.path.exists(bed_path):
+        return hits
+    with open(bed_path) as f:
+        for line in f:
+            if line.startswith("#") or not line.strip():
+                continue
+            cols = line.strip().split("\t")
+            if len(cols) < 4:
+                continue
+            hits.append({
+                "chrom": cols[0],
+                "start": int(cols[1]),
+                "end": int(cols[2]),
+                "forward": "-" not in cols[3],
+            })
+    return hits
+
+
+def exon_has_hit_in_regions(exon, hits):
+    """Check if any BED hit overlaps the 4 flanking regions of this exon."""
+    fwd = (exon["strand"] == "+")
+    r1s = exon["upstream_ee"] - 100
+    r1e = exon["upstream_ee"] + 500
+    r2s = exon["exon_start"] - 500
+    r2e = exon["exon_start"] + 100
+    r3s = exon["exon_end"] - 100
+    r3e = exon["exon_end"] + 500
+    r4s = exon["downstream_es"] - 500
+    r4e = exon["downstream_es"] + 100
+
+    for h in hits:
+        if h["chrom"] != exon["chrom"]:
+            continue
+        if h["forward"] != fwd:
+            continue
+        # Check overlap with any of the 4 regions
+        if h["start"] <= r1e and h["end"] >= r1s:
+            return True
+        if h["start"] <= r2e and h["end"] >= r2s:
+            return True
+        if h["start"] <= r3e and h["end"] >= r3s:
+            return True
+        if h["start"] <= r4e and h["end"] >= r4s:
+            return True
+    return False
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="rnamotifs-extract",
+        description=textwrap.dedent(__doc__),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("results_dir",
+        help="Path to a completed RNAmotifs results folder")
+    parser.add_argument("-t", "--tetramer",
+        help="Extract for a specific tetramer (default: all enriched)")
+    parser.add_argument("-c", "--category",
+        choices=["enhanced", "silenced", "both"], default="both",
+        help="Exon category to extract (default: both)")
+    parser.add_argument("-o", "--output",
+        help="Output file (default: stdout)")
+    parser.add_argument("--bed", action="store_true",
+        help="Output in BED format (default: TSV)")
+    args = parser.parse_args()
+
+    results_dir = os.path.abspath(args.results_dir)
+    if not os.path.isdir(results_dir):
+        sys.exit(f"Error: not a directory: {results_dir}")
+
+    data_dir = os.path.join(results_dir, "data")
+    tet_dir = os.path.join(data_dir, "tetramers")
+
+    # Find splicing input file from the log
+    log_path = os.path.join(results_dir, "rnamotifs.log")
+    splicing_file = None
+    if os.path.exists(log_path):
+        with open(log_path) as f:
+            for line in f:
+                if "Input file" in line and ":" in line:
+                    splicing_file = line.split(":", 1)[1].strip()
+                    break
+    if not splicing_file or not os.path.exists(splicing_file):
+        sys.exit("Error: cannot find splicing input file. "
+                 "Check rnamotifs.log in the results folder.")
+
+    # Get tetramers to process
+    if args.tetramer:
+        tetramers = [args.tetramer]
+    else:
+        tetramers = find_enriched_tetramers(results_dir)
+        if not tetramers:
+            sys.exit("No enriched tetramers found in results.")
+
+    # Read exons
+    exons = read_splicing_file(splicing_file)
+
+    # Filter by category
+    cats = ["enhanced", "silenced"] if args.category == "both" else [args.category]
+
+    # Open output
+    out = open(args.output, "w") if args.output else sys.stdout
+
+    if args.bed:
+        # BED format: chrom, start, end, name, score, strand
+        for tet in tetramers:
+            hits = []
+            for sub in ["nr", "r"]:
+                bed_path = os.path.join(tet_dir, sub, f"{tet}.bed")
+                hits.extend(read_bed_hits(bed_path))
+
+            for exon in exons:
+                if exon["category"] not in cats:
+                    continue
+                if exon_has_hit_in_regions(exon, hits):
+                    name = f"{tet}|{exon['category']}"
+                    score = str(int(abs(exon["dirank"]) * 100))
+                    out.write(f"{exon['chrom']}\t{exon['exon_start']}\t"
+                              f"{exon['exon_end']}\t{name}\t{score}\t"
+                              f"{exon['strand']}\n")
+    else:
+        # TSV format with full details
+        out.write("tetramer\tcategory\tchrom\tstrand\texon_start\texon_end\t"
+                  "upstream_exon_end\tdownstream_exon_start\tdirank\texon_id\n")
+
+        for tet in tetramers:
+            hits = []
+            for sub in ["nr", "r"]:
+                bed_path = os.path.join(tet_dir, sub, f"{tet}.bed")
+                hits.extend(read_bed_hits(bed_path))
+
+            for exon in exons:
+                if exon["category"] not in cats:
+                    continue
+                if exon_has_hit_in_regions(exon, hits):
+                    out.write(f"{tet}\t{exon['category']}\t"
+                              f"{exon['chrom']}\t{exon['strand']}\t"
+                              f"{exon['exon_start']}\t{exon['exon_end']}\t"
+                              f"{exon['upstream_ee']}\t{exon['downstream_es']}\t"
+                              f"{exon['dirank']}\t{exon['exon_id']}\n")
+
+    if args.output:
+        out.close()
+        n_lines = sum(1 for _ in open(args.output)) - (0 if args.bed else 1)
+        print(f"Wrote {n_lines} exons to {args.output}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    import signal
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    main()
