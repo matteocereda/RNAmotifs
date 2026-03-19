@@ -91,7 +91,7 @@ The chart below compares wall-clock time for the tetramer search step
 pth=0.5). The Python m3_light module is single-threaded; the C++
 `rnamotifs_search` binary scales across cores via OpenMP.
 
-![Tetramer search performance comparison](examples/performance_comparison.svg)
+![Tetramer search performance comparison](benchmarks/performance_comparison.svg)
 
 The single-threaded C++ version is already ~2x faster than Python due to
 in-memory chromosome caching, prefix-sum Bedgraph clustering, and
@@ -101,7 +101,7 @@ improvement, reaching ~18x total speedup at 12 cores.
 To reproduce the benchmark on your machine:
 
 ```bash
-bash examples/run_benchmark.sh
+bash benchmarks/run_benchmark.sh
 ```
 
 v2 includes additional algorithmic optimisations:
