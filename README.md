@@ -84,6 +84,26 @@ speed, reproducibility, and usability.
 | Bootstrap FDR | ~90 sec (R, 1 core) | ~2 sec (C++, 10 cores) | **~45x** |
 | Full pipeline | ~40 min | ~5 min | **~8-10x** |
 
+#### Tetramer search benchmark
+
+The chart below compares wall-clock time for the tetramer search step
+(512 motifs, NOVA dataset with 4,368 exons on mm9, hw=15, min_height=4,
+pth=0.5). The Python m3_light module is single-threaded; the C++
+`rnamotifs_search` binary scales across cores via OpenMP.
+
+![Tetramer search performance comparison](examples/performance_comparison.svg)
+
+The single-threaded C++ version is already ~2x faster than Python due to
+in-memory chromosome caching, prefix-sum Bedgraph clustering, and
+compiled string search. Multi-core scaling provides an additional ~7-9x
+improvement, reaching ~18x total speedup at 12 cores.
+
+To reproduce the benchmark on your machine:
+
+```bash
+bash examples/run_benchmark.sh
+```
+
 v2 includes additional algorithmic optimisations:
 
 - **Indexed BED lookup** — BED records are indexed by chromosome and strand
@@ -657,6 +677,7 @@ Directories created at runtime: `build/`, `input/`, `results/`, `tetramers/`,
 
 Designed by **Matteo Cereda** and **Jernej Ule**.
 Main developer: Matteo Cereda.
+Contributing developers: Gregor Rot, Peter Juvan, Uberto Pozzoli.
 
 ## License
 
