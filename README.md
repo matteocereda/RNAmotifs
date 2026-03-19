@@ -9,6 +9,7 @@
   <a href="#quick-start">Quick start</a> &middot;
   <a href="#usage">Usage</a> &middot;
   <a href="#tools">Tools</a> &middot;
+  <a href="#performance">Performance</a> &middot;
   <a href="#citation">Citation</a>
 </p>
 
@@ -290,7 +291,9 @@ Results are saved in `results/<date>_<name>_<params>/`:
 
 ### Tetramer search: Python m3_light vs C++17
 
-![Benchmark](benchmarks/performance_comparison.pdf)
+<p align="center">
+  <img src="benchmarks/performance_comparison.png" alt="Tetramer search benchmark" width="700">
+</p>
 
 | Implementation | Cores | Time | Speedup |
 |---------------|-------|------|---------|
