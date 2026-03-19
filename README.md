@@ -286,6 +286,8 @@ Results are saved in `results/<date>_<name>_<params>/`:
 
 ## Performance
 
+*All benchmarks: NOVA dataset (4,368 exons), mm9 genome. Intel i7-8700 @ 3.20 GHz (6c/12t), 64 GB RAM, Ubuntu 24.04 LTS.*
+
 ### Tetramer search: Python m3_light vs C++17
 
 ![Benchmark](benchmarks/performance_comparison.pdf)
@@ -297,9 +299,33 @@ Results are saved in `results/<date>_<name>_<params>/`:
 | C++17 rnamotifs_search (v2) | 4 | ~5 min | **7x** |
 | C++17 rnamotifs_search (v2) | 12 | ~2 min | **18x** |
 
-*Benchmark: NOVA dataset, mm9, 512 tetramers. Intel i7-8700, 64 GB RAM, Ubuntu 24.04.*
+The C++ implementation produces **byte-identical output** to the Python
+m3_light module (verified: 0 diffs across 1024 BED files, both alphabets).
 
-The C++ implementation produces **byte-identical output** to the Python m3_light module (verified across 1024 BED files). See [benchmarks/](benchmarks/) for full details.
+### Bootstrap FDR
+
+| Implementation | Cores | 10,000 iterations | Speedup |
+|---------------|-------|-------------------|---------|
+| R bootstrap-FDR.R (v1) | 1 | ~90 sec | 1x |
+| C++17 rnamotifs_bootstrap (v2) | 1 | ~20 sec | **4.5x** |
+| C++17 rnamotifs_bootstrap (v2) | 12 | ~2 sec | **~45x** |
+
+### Full pipeline
+
+| Pipeline | Cores | Time |
+|----------|-------|------|
+| v1 (Python 2 + R + C++03) | 1 | ~40 min |
+| v2 (C++17 + OpenMP + R) | 12 | ~5 min |
+| v2 with `--structure --conservation` | 12 | ~1h 11min |
+
+Structure and conservation profiling are I/O-bound (ViennaRNA folding, PhyloP lookup) and dominate the runtime when enabled.
+
+### Result reproducibility
+
+The v2 C++ motif search produces **byte-identical BED output** to the v1
+Python `m3_light` module. The C++ bootstrap FDR uses the same Fisher exact
+test, BH adjustment, and resampling strategy as the R implementation.
+Both were verified on the NOVA dataset with matching parameters.
 
 ### Key optimisations
 
@@ -308,6 +334,8 @@ The C++ implementation produces **byte-identical output** to the Python m3_light
 - **Chromosome preloading** — full in-memory genome vs per-region file I/O
 - **OpenMP parallelism** — 512 motifs processed across all CPU cores
 - **Constrained partition function** — ViennaRNA with `compute_bpp=0` for structure profiling
+
+See [benchmarks/](benchmarks/) for full details and reproduction scripts.
 
 ---
 
