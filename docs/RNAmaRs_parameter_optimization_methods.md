@@ -1,0 +1,1 @@
+To evaluate whether RBP $r^*$ is preferentially associated with its own significant tetramers, we treated the $K$ association scores of the true RBP, $\{S^{(d)}_{r^*,t}\}_{t=1}^{K}$, as the positive set and the scores of all other panel RBPs for the same tetramers as the negative set. The AUROC was computed as the Wilcoxon-Mann-Whitney statistic:
