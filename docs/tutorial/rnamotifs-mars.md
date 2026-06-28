@@ -9,11 +9,13 @@ running RNAmotifs motif discovery directly inside the scoring loop.
 
 | Phase | Name | What it does |
 |-------|------|--------------|
-| **1** | Multi-parameter sweep | Runs RNAmotifs across `hw`/`ew` combinations to find enriched tetramers under different clustering stringencies. |
-| **2** | Signal Recovery Rate (SCORE1) | eCLIP-downsampling robustness of the RBP's binding profile. |
-| **3** | Profile similarity (SCORE2) | Cosine similarity between the motif-enrichment profile and the eCLIP binding profile. |
+| **1** | Multi-parameter sweep | Runs RNAmotifs across `hw`/`ew` combinations (paper notation `n = 2·hw` / `e`) to find enriched MRMs (multivalent RNA motifs; `tetramer` in code) under different clustering stringencies. |
+| **2** | Signal Recovery Rate — **SRR** (`SCORE1` in code) | eCLIP-downsampling robustness of the RBP's binding profile. |
+| **3** | Cosine Similarity — **CS** (`SCORE2` in code) | Cosine similarity between the motif-enrichment profile and the eCLIP binding profile. |
 
-The **association score (AS) = SCORE2 × SCORE1**, aggregated into per-RBP heatmaps.
+The **Association Score (AS) = CS × SRR** (`SCORE2 × SCORE1` in code), aggregated into per-RBP heatmaps.
+The SRR weight is optional: pass `--score-mode cs-only` to score on the cosine similarity alone
+(AS = CS), or keep the default `--score-mode full` for AS = CS × SRR.
 
 ## Two modes
 
@@ -45,9 +47,12 @@ Intermediate results: `results/MaRs_discovery/<cell>_<genome>/<rbp>/` with `swee
 | `--eclip-dir` | — | Path to eCLIP peak files. |
 | `--mars-dir` | — | RNAmars data dir (`Tables/`, `Rdata/`). |
 | `--mars-exons-dir` | — | Per-RBP RNAmotifs input files (discovery). |
-| `--param-grid-hw` | `5 15 25 35` | Half-window grid. |
-| `--param-grid-ew` | `30 50 100 200 300` | Enrichment-window grid. |
+| `--param-grid-n` | `10 30 50 70` | Clustering-window grid `n` (paper notation, `n = 2·hw`; each value even). Back-compat alias `--param-grid-hw` (= `n/2`) still accepted. |
+| `--param-grid-e` | `30 50 100 200 300` | Enrichment-window grid `e` (alias `--param-grid-ew`). |
 | `--optim` | `grid` | `grid` or `bayes` (Bayesian optimisation). |
+| `--make-heatmaps` | off | After discovery, run `generate_heatmap.R` for every trained RBP → the Figure-4A final heatmaps (AS heatmap + per-RBP RNA splicing maps), using the grid optima. Reuses existing sweeps (no re-search); writes `…/<cell>_<genome>/heatmaps/<cell>_<RBP>_<enh\|sil>.pdf`. Resumable. |
+| `--heatmap-top-mrms` | `0` (all) | Crop the Phase-3 heatmaps to the top-N enriched MRMs (columns). `5` reproduces the Figure-4A top-5 crop. |
+| `--heatmap-top-rbps` | `0` (all) | Crop the Phase-3 heatmaps to the top-N RBPs (rows). |
 | `--bo-n-init` / `--bo-n-iter` | 8 / 30 | Bayesian-opt initial points / iterations. |
 | `--bo-seed` | 42 | Bayesian-opt random seed. |
 | `--in-intron` | `300` | One or more intron-extent values (grid-searchable). |

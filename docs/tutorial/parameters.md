@@ -16,7 +16,7 @@ concepts behind them.
 
 | Flag | Default | What it controls | When to change |
 |------|---------|------------------|----------------|
-| `-w, --half-window` | 15 | Half-width (bp) for clustering motif copies; copies within `±hw` join one cluster. **Larger → looser, longer-range multivalency.** | Increase to capture dispersed motif arrays; decrease for tight local clusters. The MaRs sweep tries `{5, 15, 25, 35}`. |
+| `-w, --half-window` | 15 | Half-width `hw` (bp) for clustering motif copies; copies within `±hw` join one cluster. In paper notation this is the clustering window **n = 2·hw** (`--n` is an alias: `--n 30` ⇔ `-w 15`). **Larger → looser, longer-range multivalency.** | Increase to capture dispersed motif arrays; decrease for tight local clusters. The MaRs sweep tries `hw ∈ {5, 15, 25, 35}` (n ∈ {10, 30, 50, 70}). |
 | `-m, --min-height` | 4 | Minimum number of motif copies stacked within a window to call a cluster. **Higher → stricter.** | Lower (2–3) for sparse motifs / small exon sets; raise for very abundant motifs. |
 | `-p, --pth` | 0.5 | Percentage threshold used when binarising cluster occupancy along the map. | Rarely changed; leave at default unless reproducing a specific protocol. |
 
@@ -24,14 +24,14 @@ concepts behind them.
 
 | Flag | Default | What it controls |
 |------|---------|------------------|
-| `-e, --enrichment-window` | 30 | Enrichment window (bp) over which positional enrichment is aggregated. **Larger → smoother, broader signal.** The MaRs sweep tries `{30, 50, 100, 200, 300}`. |
+| `-e, --enrichment-window` | 30 | Enrichment window `ew` (bp; paper notation **e**) over which positional enrichment is aggregated. **Larger → smoother, broader signal.** The MaRs sweep tries `{30, 50, 100, 200, 300}`. |
 | `--in-exon` | 30 | How far (bp) into the **exon** the analysed region extends from each splice site. |
 | `--in-intron` | 300 | How far (bp) into the **intron** the analysed region extends from each splice site. |
 | `--event-type` | `SE` | `SE` (skipped exon) or 🚧 `RI` (intron retention — *work in progress*, see below). |
 
-> `hw` and `ew` are the two parameters most worth tuning — they trade sensitivity vs
-> specificity. There is no universal optimum; the **[MaRs discovery mode](rnamotifs-mars.md)**
-> grid- or Bayes-searches them per RBP.
+> `hw` (paper **n = 2·hw**) and `ew` (paper **e**) are the two parameters most worth
+> tuning — they trade sensitivity vs specificity. There is no universal optimum; the
+> **[MaRs discovery mode](rnamotifs-mars.md)** grid- or Bayes-searches them per RBP.
 
 ## Statistics — *how strict the filter is*
 
@@ -76,7 +76,7 @@ for `--rmats-incl`, `--rmats-fdr`, `--rmats-constit`, `--rmats-max-constit`.
 | Clusters too local / fragmented | Increase `-w` and/or `-e`. |
 | Want longer footprints | Increase `-w`; only try `-k 5` with a strong prior (`-k 4` usually wins). |
 | Runs too slow | Use `-b 1000`; raise `-c` (diminishing returns — memory-bandwidth bound). |
-| Don't know best `hw`/`ew` | Don't guess — use [`rnamotifs-mars --mode discovery`](rnamotifs-mars.md) to grid/Bayes-search. |
+| Don't know best `hw`/`ew` (paper `n`/`e`) | Don't guess — use [`rnamotifs-mars --mode discovery`](rnamotifs-mars.md) to grid/Bayes-search. |
 
 
 ---

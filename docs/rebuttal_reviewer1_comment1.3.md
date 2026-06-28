@@ -1,0 +1,37 @@
+# Response to Reviewer 1 — Comment 1.3
+
+> **Comment 1.3.** Are the evaluations for each RBP in Figure 4 based on 'out of sample' with respect to parameter selection? In other words were the parameters chosen independently of each dataset being analysed? If not, a demonstration of this would show that the method is generalisable beyond the optimisation used.
+
+## Draft response
+
+We thank the Reviewer for raising this important point. In the original submission, the evaluations in Figure 4 use in-sample parameter selection: for each RBP, the clustering window (*n*) and enrichment window (*e*) that maximize that RBP's own AUROC are used for the evaluation shown. We acknowledge that this design, while standard for supervised parameter tuning, does not directly demonstrate out-of-sample generalizability.
+
+To address this concern, we performed a leave-one-RBP-out (LORO) cross-validation across both reference panels (15 RBPs in HepG2, 13 in K562; 28 RBP–cell line combinations). For each held-out RBP *r\**, optimal parameters were selected by maximizing the mean AUROC over the remaining panel members, and the held-out RBP was then evaluated at these independently chosen parameters. This procedure ensures that the parameter selection for each RBP is strictly out-of-sample.
+
+**The rank order of RBP performance is preserved under LORO.** The Spearman correlation between in-sample and LORO AUROC values was ρ = 0.74 (p = 1.7 × 10⁻³) in HepG2 and ρ = 0.73 (p = 4.7 × 10⁻³) in K562. RBPs that achieve high AUROC under in-sample optimization (e.g., QKI, HNRNPC, PTBP1, TARDBP) also perform well under LORO, confirming that the method captures genuine regulatory signatures rather than parameter-specific artifacts.
+
+**LORO parameters converge to a stable consensus.** A notable feature of the LORO analysis is the convergence of cross-validated parameters to one or two consensus combinations per cell line: 12/15 folds in HepG2 selected (*n*, *e*) = (25, 200), and 10/13 folds in K562 selected (35, 300). This convergence indicates that the AUROC landscape, averaged over the panel, has a well-defined global optimum that is stable to the removal of individual RBPs — a necessary condition for out-of-sample generalizability.
+
+**Absolute AUROC decreases, as expected for out-of-sample evaluation.** The mean LORO AUROC is 0.574 in HepG2 (vs. 0.764 in-sample; Δ = −0.19) and 0.462 in K562 (vs. 0.722; Δ = −0.26). However, 50% of RBPs (14/28) retain LORO AUROC within 0.10 of their in-sample value. The AUROC loss is concentrated among RBPs with spatially narrow binding requirements (e.g., U2AF1 requires small *e* for 3ʹ splice site recognition) or weak motif signals, where the consensus parameters — optimized for the panel majority — do not capture the RBP-specific spatial scale.
+
+**Two tiers of robustness.** The LORO results partition RBPs into two biologically interpretable tiers:
+- *Robust RBPs* (|Δ| < 0.10): QKI, HNRNPC, PTBP1, TARDBP, RBM22, SRSF1, U2AF2, UCHL5 — these bind well-defined, highly enriched motifs whose positional enrichment is strong enough to be captured across a range of window sizes. These are exactly the RBPs at the top of the splicing map hierarchy in Van Nostrand et al. (Extended Data Fig. 6; *Nature*, 2020), where position-specific eCLIP enrichment at regulated exons is strongest.
+- *Parameter-sensitive RBPs* (|Δ| > 0.20): HNRNPK, U2AF1, SF3B4, NCBP2, AGGF1, PUS1 — these require specific parameter tuning because their binding signal is spatially confined or diffuse, and the consensus parameters miss their specific optimum.
+
+**Complementary evidence from Bayesian optimisation benchmark.** As additional evidence of robustness to parameter selection, we benchmarked grid search against Bayesian optimisation (BO) across the same 28 RBP–cell line combinations (Supplementary Table [X]). BO explores a continuous parameter space using a Gaussian process surrogate (38 evaluations per RBP), yet grid search outperformed or matched BO in 19/28 cases (68%), with a mean AUROC of 0.745 vs. 0.705 for BO. The relative performance of the two strategies tracked the strength of the underlying eCLIP signal, not the optimisation method: strong regulators achieved high AUROC with both methods, while weak-signal RBPs performed poorly regardless. This demonstrates that the method's performance is driven by the biology — the presence of position-specific binding — rather than by the choice of parameter optimisation strategy.
+
+**Summary.** Together, the LORO cross-validation and the grid-vs-BO benchmark demonstrate that: (i) the relative ranking of RBPs by self-identification capacity generalizes beyond in-sample optimization (Spearman ρ ≥ 0.73 in both panels); (ii) LORO-selected parameters converge to a stable consensus, confirming a robust AUROC landscape; and (iii) an independent, more computationally intensive optimisation strategy (Bayesian optimisation) does not improve upon the grid search. We have added the LORO analysis to the revised manuscript (new Supplementary Figure [X] and Supplementary Table [X]) and updated the Results to clarify that parameter selection is in-sample while providing the LORO results as evidence of generalizability.
+
+---
+
+## Suggested addition to Results (after current paragraph [46], Figure 4 discussion)
+
+To assess whether the parameter selection procedure generalizes beyond the in-sample optimization, we performed a leave-one-RBP-out (LORO) cross-validation. For each held-out RBP, optimal parameters were selected by maximizing mean AUROC over the remaining panel members, and the held-out RBP was evaluated at these independently chosen parameters. The rank order of RBP performance was preserved (Spearman ρ = 0.74, p = 1.7 × 10⁻³ in HepG2; ρ = 0.73, p = 4.7 × 10⁻³ in K562), with 50% of RBPs retaining LORO AUROC within 0.10 of their in-sample value (Supplementary Fig. [X]). LORO-selected parameters converged to a single consensus per cell line (HepG2: n = 25, e = 200; K562: n = 35, e = 300), indicating a stable AUROC landscape. As a complementary test, Bayesian optimisation over a continuous parameter space did not systematically improve upon the discrete grid search (mean Δ = −0.039 ± 0.108; Supplementary Table [X]), confirming that the method's discriminative capacity is driven by the underlying biology rather than by the specific optimisation strategy.
+
+---
+
+## Suggested addition to Methods
+
+### Leave-one-RBP-out cross-validation
+
+To evaluate out-of-sample generalizability of the parameter selection, a leave-one-RBP-out (LORO) cross-validation was performed independently for each cell line. For each target RBP *r\**, the remaining panel RBPs constituted the training set. For each parameter combination (*n*, *e*), the mean AUROC was computed over training RBPs with non-zero AUROC (i.e., those producing at least one enriched MRM). The parameter combination maximizing the training-set mean AUROC was selected, and the held-out RBP was evaluated at these parameters. Agreement between in-sample and LORO AUROC values was assessed by Spearman rank correlation and paired Wilcoxon signed-rank test. Bootstrap 95% confidence intervals on the mean AUROC difference were obtained from 10,000 resamples. The LORO analysis used the same RNAmotifs parameters as the grid search benchmark (1,000 bootstrap iterations, an adaptive per-region Fisher cutoff [1st percentile, capped at 0.05], p-empirical ≤ 0.01, bootstrap seed 30580).

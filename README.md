@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="RNAmotifs" width="600">
+  <img src="docs/logo.png" alt="RNAmotifs" width="600">
 </p>
 
 <h3 align="center">Prediction of multivalent RNA motifs controlling alternative splicing</h3>
@@ -19,6 +19,12 @@
 ---
 
 RNAmotifs identifies clusters of short RNA motifs (tetramers) enriched at specific positions around alternatively spliced exons regulated by RNA-binding proteins. It generates **RNA splicing maps** showing positional enrichment of multivalent motifs around enhanced and silenced exons, with optional **RNA secondary structure** and **evolutionary conservation** profiling.
+
+<p align="center">
+  <img src="docs/rnamotifs_sketch.png" alt="RNAmotifs and the MaRs module — overview" width="860">
+</p>
+
+<p align="center"><em>RNAmotifs discovers positionally enriched multivalent RNA motifs (MRMs); the <strong>MaRs</strong> module calibrates a reference panel from eCLIP + knockdown data (Phase 1) and matches enriched MRMs to RBP binding to identify the regulating protein (MRM–RBP association).</em></p>
 
 RNAmotifs has been used to identify motifs bound by NOVA, PTBP1, hnRNP C, TARDBP, TIA1 and TIAL1.
 
@@ -85,6 +91,7 @@ cd genomes
 ./hg19.download.sh   # Human GRCh37
 ./hg38.download.sh   # Human GRCh38
 ./mm10.download.sh   # Mouse GRCm38
+./mm39.download.sh   # Mouse GRCm39
 cd ..
 ```
 
@@ -133,7 +140,7 @@ All C++ binaries are self-contained -- no external C++ library dependencies.
 |--------|-------------|---------|
 | `input_file` | Splicing-change file (positional) | required |
 | `-n, --name` | Analysis name (e.g. NOVA) | required |
-| `-g, --genome` | Reference genome (`hg19`, `hg38`, `mm9`, `mm10`) | required |
+| `-g, --genome` | Reference genome (`hg19`, `hg38`, `mm9`, `mm10`, `mm39`) | required |
 | `-w, --half-window` | Half-window for clustering (bp) | 15 |
 | `-m, --min-height` | Minimum cluster height | 4 |
 | `-p, --pth` | Percentage threshold | 0.5 |
@@ -189,12 +196,24 @@ The `--in-exon` parameter controls the extent into exonic regions (R2 for SE, R1
 
 ### rMATS input
 
+Skipped exon (SE) events:
 ```bash
 ./rnamotifs SE.MATS.JC.txt \
     --from-rmats --rmats-incl 0.1 --rmats-fdr 0.05 \
     --name MYRBP --genome hg19 \
     --bootstraps 10000 --cores 10
 ```
+
+Intron retention (RI) events:
+```bash
+./rnamotifs RI.MATS.JunctionCountOnly.txt \
+    --from-rmats --event-type RI \
+    --rmats-incl 0.1 --rmats-fdr 0.1 \
+    --name MYRBP_RI --genome hg19 \
+    --bootstraps 1000 --cores 4
+```
+
+The `--from-rmats` flag auto-detects the correct column mapping based on `--event-type`. For RI, coordinates are mapped as: v5=upstreamES, v6=upstreamEE (5'SS), v7=downstreamES (3'SS), v8=downstreamEE, with `;RI` appended.
 
 ### Structure and conservation profiling
 
@@ -215,6 +234,7 @@ Both analyses produce heatmaps aligned to the RNA splicing map coordinate system
 | `hg38` | Human | GRCh38 |
 | `mm9`  | Mouse | NCBI37 |
 | `mm10` | Mouse | GRCm38 |
+| `mm39` | Mouse | GRCm39 |
 
 ---
 
@@ -227,9 +247,9 @@ The core tool. Runs the complete motif discovery pipeline from splicing file to 
 ### `rnamotifs-extract` -- Export enriched tetramer coordinates
 
 ```bash
-./rnamotifs-extract results/<run_name>                    # All enriched, TSV
-./rnamotifs-extract results/<run_name> -t YCAY --bed      # Specific tetramer, BED
-./rnamotifs-extract results/<run_name> -c silenced -o out.tsv
+./rnamotifs-extract results/<name>/<run_name>                    # All enriched, TSV
+./rnamotifs-extract results/<name>/<run_name> -t YCAY --bed      # Specific tetramer, BED
+./rnamotifs-extract results/<name>/<run_name> -c silenced -o out.tsv
 ```
 
 | Option | Description | Default |
@@ -277,7 +297,24 @@ The pipeline runs in three phases:
 | **2** | Signal recovery rate (SCORE1) | For each RBP, downsamples eCLIP peaks and measures how well motif positions recover the eCLIP signal. Quantifies how much RBP binding is explained by each tetramer cluster |
 | **3** | Cosine similarity (SCORE2) | Computes the cosine similarity between the RNAmotifs positional profile and the eCLIP binding profile, producing a profile-level association score |
 
-The combined scores are visualised as heatmaps showing MRM-RBP associations.
+The association score combines the two as **AS = SCORE2 × SCORE1** (CS × SRR) by default. The SRR
+weight down-weights RBPs whose eCLIP map is poorly reproducible; on uniformly high-quality eCLIP it is
+empirically neutral, so it can be disabled with `--score-mode cs-only` (AS = CS), leaving the cosine
+similarity as the sole driver. The combined scores are visualised as heatmaps showing MRM-RBP associations.
+
+#### Notation: paper ↔ code
+
+The publication and the code use different names for the same quantities. The code retains its internal
+names (and on-disk keys such as `hw_X_ew_Y`, `SCORE1_*`, `SCORE2_*`) for stability; the mapping is:
+
+| Paper | Code (CLI / output) | Note |
+|-------|---------------------|------|
+| **n** (clustering window) | `hw` / `-w, --half-window` | **n = 2·hw** (e.g. n=30 ↔ hw=15). Pass `--n` to use paper units directly. |
+| **e** (enrichment window) | `ew` / `-e, --enrichment-window` | identical value (e = ew). |
+| **SRR** (signal recovery rate) | `SCORE1` | eCLIP-map robustness weight. |
+| **CS** (cosine similarity) | `SCORE2` | motif-vs-eCLIP profile match. |
+| **AS** (association score) | combined score | AS = CS × SRR (`--score-mode full`); AS = CS (`cs-only`). |
+| **MRM** (multivalent RNA motif) | tetramer / motif cluster | enriched 4-nt degenerate motif. |
 
 ### CLI options
 
@@ -285,7 +322,7 @@ The combined scores are visualised as heatmaps showing MRM-RBP associations.
 |--------|-------------|---------|
 | `input_file` | Splicing-change file (positional) | required |
 | `-n, --name` | Analysis name | required |
-| `-g, --genome` | Reference genome (`hg19`, `hg38`, `mm9`, `mm10`) | hg19 |
+| `-g, --genome` | Reference genome (`hg19`, `hg38`, `mm9`, `mm10`, `mm39`) | hg19 |
 | `--cell-line` | Cell line for eCLIP comparison (`HepG2` or `K562`) | required |
 | `--eclip-dir` | Path to eCLIP peaks directory | required |
 | `--mars-dir` | Path to RNAmars data directory (containing `Tables/`, `Rdata/`) | required |
@@ -296,6 +333,7 @@ The combined scores are visualised as heatmaps showing MRM-RBP associations.
 | `-b, --bootstraps` | Bootstrap iterations | 10000 |
 | `--p-fisher` | Fisher p-value threshold | 0.1 |
 | `--p-empirical` | Empirical p-value threshold | 0.00005 |
+| `--score-mode` | Association score: `full` (AS = CS × SRR) or `cs-only` (AS = CS, SRR weight disabled) | full |
 | `--min-height` | Minimum cluster height | 4 |
 | `--pth` | Percentage threshold | 0.5 |
 | `--skip-rnamotifs` | Skip Phase 1 (assume results already exist) | off |
@@ -323,7 +361,7 @@ The combined scores are visualised as heatmaps showing MRM-RBP associations.
 
 ### Output files
 
-All output is collected in a single directory: `results/MaRs_<name>_<cell_line>_<genome>/`
+All output is collected in a single directory: `results/MaRs_<name>/<YYYYMMDD>_<cell_line>_<genome>/`
 
 | File | Description |
 |------|-------------|
@@ -366,6 +404,16 @@ RBPs are processed sequentially to keep peak memory below 2 GB regardless of pan
 
 Note: the `input_file` positional argument (e.g. `dummy.txt`) is unused in discovery mode but still required by the argument parser.
 
+**Final heatmaps (`--make-heatmaps`):** append `--make-heatmaps` to the discovery command to also produce, for every trained RBP, the native `generate_heatmap.R` final heatmaps — the association-score (AS) dot-heatmap combined with the per-RBP RNA splicing maps (the Figure-4A composite). It uses the grid optima from the discovery manifest and **reuses the existing grid sweeps** (no motif re-search): each RBP's sweeps are re-scored and rendered to `results/MaRs_discovery/<cell>_<genome>/heatmaps/<cell>_<RBP>_<enh|sil>.pdf`. It is **resumable** — re-run the same discovery command with the flag on already-completed results to (re)generate the heatmaps without repeating discovery. To crop each heatmap to the strongest signal (as in Figure 4A), add `--heatmap-top-mrms N` (top-N MRMs/columns) and/or `--heatmap-top-rbps N` (top-N RBPs/rows); `0` (default) shows all.
+
+```bash
+./rnamotifs-mars dummy.txt --mode discovery \
+    --cell-line HepG2 --mars-exons-dir data/mars_exons/HepG2 \
+    --eclip-dir data/eCLIP_processed/HepG2/hg19 \
+    --mars-dir data/mars_reference -n discovery_HepG2 -g hg19 \
+    -c 8 -b 1000 --p-empirical 0.01 --make-heatmaps
+```
+
 **Outputs (written to `--mars-dir`):**
 
 | File | Description |
@@ -374,22 +422,27 @@ Note: the `input_file` positional argument (e.g. `dummy.txt`) is unused in disco
 | `Rdata/<cell_line>_AUC.tsv` | AUC-based signal recovery metrics per RBP |
 | `Rdata/<cell_line>_PEAK_*.tsv` | Normalized eCLIP binding profiles (via `--compute-peak` in `rnamotifs_mars_score`) |
 
-Intermediate results are written to `results/MaRs_discovery_<cell_line>_<genome>/`, with per-RBP subdirectories containing `sweep/` (RNAmotifs runs) and `scores/` (association scores with a `diagnostics/` subfolder for per-parameter SCORE1/SCORE2 matrices).
+Intermediate results are written to `results/MaRs_discovery/<cell_line>_<genome>/`, with per-RBP subdirectories containing `sweep/` (RNAmotifs runs) and `scores/` (association scores with a `diagnostics/` subfolder for per-parameter SCORE1/SCORE2 matrices).
 
 **Parameter grid customization:**
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--param-grid-hw` | `5 15 25 35` | Half-window values to test |
-| `--param-grid-ew` | `30 50 100 200 300` | Enrichment window values to test |
+| `--param-grid-n` | `10 30 50 70` | Clustering-window values `n` to test (paper notation, `n = 2·hw`; each must be even) |
+| `--param-grid-e` | `30 50 100 200 300` | Enrichment-window values `e` to test |
 
 The default grid yields 20 parameter combinations per RBP. Example with a reduced grid:
 
 ```bash
 ./rnamotifs-mars dummy.txt --mode discovery \
-    --param-grid-hw 15 25 --param-grid-ew 50 100 200 \
+    --param-grid-n 30 50 --param-grid-e 50 100 200 \
     ...
 ```
+
+> The half-window spellings `--param-grid-hw`/`--param-grid-ew` (and, for Bayesian
+> optimisation, `--bo-hw-range`/`--bo-ew-range`) remain accepted as hidden back-compat
+> aliases; internally everything is keyed on `hw = n/2`, so on-disk result names are
+> unchanged.
 
 **Crash-safe resumption:**
 
@@ -427,10 +480,11 @@ cd genomes && ./mm9.download.sh && cd ..
     --p-empirical 0.001
 
 # 3. View results
-ls results/*NOVA*/
-# MRMs_NOVA_*.pdf           <- RNA splicing map
-# MRMs_NOVA_*.csv           <- Enriched tetramer table
-# rnamotifs.log             <- Pipeline log with timings
+ls results/NOVA/
+# <YYYYMMDD>_mm9_w15_.../
+#   MRMs_NOVA_*.pdf           <- RNA splicing map
+#   MRMs_NOVA_*.csv           <- Enriched tetramer table
+#   rnamotifs.log             <- Pipeline log with timings
 ```
 
 The output PDF shows positional enrichment of tetramer clusters around enhanced (red) and silenced (blue) exons.
@@ -459,7 +513,7 @@ python3 data/prepare_mars_exons.py \
     --p-empirical 0.001
 
 # 4. View the RNA splicing map
-ls results/*PTBP1*/MRMs_PTBP1_*.pdf
+ls results/PTBP1/*/MRMs_PTBP1_*.pdf
 
 # 5. Re-run with structure and conservation profiling
 ./rnamotifs data/mars_exons/HepG2/PTBP1.txt \
@@ -508,10 +562,11 @@ Rscript install_mars_deps.R
     --cores 12
 
 # 3. View the heatmaps
-ls results/MaRs_PTBP1_HepG2_hg19/
-# HepG2_PTBP1_enh.pdf      <- Enhanced association heatmap
-# HepG2_PTBP1_sil.pdf      <- Silenced association heatmap
-# sweep/                    <- Per-parameter RNAmotifs results
+ls results/MaRs_PTBP1/
+# <YYYYMMDD>_HepG2_hg19/
+#   scores/HepG2_PTBP1_enh.pdf  <- Enhanced association heatmap
+#   scores/HepG2_PTBP1_sil.pdf  <- Silenced association heatmap
+#   sweep/                       <- Per-parameter RNAmotifs results
 ```
 
 The heatmaps show per-RBP association scores for each enriched tetramer cluster. High scores indicate strong MRM-RBP binding agreement between motif positional enrichment and eCLIP crosslink density.
@@ -576,7 +631,7 @@ python3 data/prepare_mars_exons.py \
     --event-type RI
 
 # 3. Generate IR splicing map for top tetramers
-Rscript src/R/ir_splicing_map.R results/<run_dir> output.pdf 30 300
+Rscript src/R/ir_splicing_map.R results/PTBP1_RI/<run_dir> output.pdf 30 300
 ```
 
 The IR splicing map uses the same lattice rendering as SE but with adapted region layout:
@@ -613,7 +668,7 @@ Workflow:
 
 ## Data preparation
 
-Helper scripts in `data/` handle ENCODE eCLIP and rMATS preprocessing. See [`data/METHODS.md`](data/METHODS.md) for a Nature Methods-style description of all preprocessing steps.
+Helper scripts in `data/` handle ENCODE eCLIP and rMATS preprocessing. See [`docs/data_preprocessing_methods.md`](docs/data_preprocessing_methods.md) for a Nature Methods-style description of all preprocessing steps.
 
 | Script | Purpose |
 |--------|---------|
@@ -622,6 +677,9 @@ Helper scripts in `data/` handle ENCODE eCLIP and rMATS preprocessing. See [`dat
 | `download_table_s4.sh` | Download DESeq2 and rMATS quantification files referenced in RNAMaRs Supplementary Table S4 |
 | `process_eclip.sh` | Process eCLIP BAM files through crosslink extraction, peak merging, replicate merging, and hg19/hg38 liftOver |
 | `eclip_qc.py` | Quality control report for processed eCLIP peak files |
+| `run_star_alignment.sh` | STAR two-pass alignment for GEO RNA-seq studies (cross-species support) |
+| `run_rmats_geo.sh` | rMATS-turbo differential splicing for GEO studies |
+| `merge_discovery_results.py` | Merge discovery mode results across in_intron=300 and in_intron=500 grids |
 
 ### `prepare_mars_exons.py` usage
 
@@ -673,7 +731,7 @@ For RI events, output files are named `{RBP}_input_rnamotifs_RI.txt` with `;RI` 
 
 ## Output files
 
-Results are saved in `results/<date>_<name>_<params>/`:
+Results are saved in `results/<name>/<date>_<genome>_<params>/`:
 
 | File | Description |
 |------|-------------|
@@ -768,7 +826,7 @@ Both were verified on the NOVA dataset with matching parameters.
 - **OpenMP parallelism** -- 512 motifs processed across all CPU cores
 - **Constrained partition function** -- ViennaRNA with `compute_bpp=0` for structure profiling
 
-See [benchmarks/](benchmarks/) for full details and reproduction scripts.
+See [bench/](bench/) for full details and reproduction scripts.
 
 ---
 
@@ -786,12 +844,15 @@ v2.0 is a complete rewrite of the [original RNAmotifs](https://github.com/cereda
 
 ### New features
 
+- **Intron retention support** (`--event-type RI`) -- full motif analysis for retained introns, with R2/R3 scanning the intron body and R1/R4 the flanking exons. Works with `--from-rmats` for direct RI.MATS import. Lattice-based RNA splicing maps adapted with exonic shading on flanking regions and splice site tick marks
+- **RNAmaRs discovery mode** (`--mode discovery`) -- automated parameter optimization for training RBP reference panels, with crash-safe JSON manifest resumption
+- **C++ association scoring** (`rnamotifs_mars_score`) -- replaces R-based scoring with memory-safe sequential RBP processing (<2 GB peak RAM)
 - **Multicore support** -- OpenMP for tetramer search and bootstrap FDR
 - **RNA structure profiling** (`--structure`) -- ViennaRNA constrained-PF heatmaps
 - **Conservation profiling** (`--conservation`) -- PhyloP heatmaps
 - **Cluster-averaged profiles** -- smoothed curves with ribbon fill
 - **Parametric region sizes** (`--in-exon`, `--in-intron`) -- adaptive clamping for short exons/introns
-- **rMATS input** (`--from-rmats`) -- direct import of Skipped Exon output
+- **rMATS input** (`--from-rmats`) -- direct import of Skipped Exon and Retained Intron output
 - **Additional genomes** -- hg38, mm10
 - **Exon extraction** (`rnamotifs-extract`) -- BED/TSV export
 - **Web GUI** (`rnamotifs-gui`) -- tabbed PDF viewer, progress bar, results dashboard
@@ -820,6 +881,8 @@ RNAmotifs2/
 │   ├── cpp/                   # C++17 / OpenMP
 │   │   ├── rnamotifs_core.h/cpp
 │   │   ├── rnamotifs_search.cpp
+│   │   ├── rnamotifs_mars_score.cpp
+│   │   ├── rnamotifs_selection.cpp
 │   │   ├── tetramer.cpp
 │   │   ├── counting.cpp
 │   │   ├── bootstrap_fdr.cpp
@@ -834,6 +897,7 @@ RNAmotifs2/
 │       └── mars/              # RNAMaRs R scripts
 │           ├── compute_association_scores.R
 │           ├── generate_heatmap.R
+│           ├── figure_parameter_optimization.R
 │           ├── selection_of_tetramers.R
 │           ├── sign_reg_plot.R
 │           ├── config_RNAmars.R
@@ -844,7 +908,6 @@ RNAmotifs2/
 │   ├── download_table_s4.sh   # Download DESeq2/rMATS files
 │   ├── process_eclip.sh       # eCLIP processing pipeline
 │   ├── eclip_qc.py            # eCLIP quality control
-│   ├── METHODS.md             # Preprocessing methods description
 │   ├── mars_exons/            # Classified exon files per cell line
 │   ├── eCLIP_processed/       # Processed eCLIP peaks
 │   └── encode_deseq_rmats/    # ENCODE DESeq2 & rMATS downloads
@@ -853,7 +916,7 @@ RNAmotifs2/
 │   ├── api.php
 │   ├── server.php
 │   └── launcher.sh
-├── genomes/                   # Genome downloads & PhyloP
+├── genomes/                   # Genome downloads & PhyloP (hg19, hg38, mm9, mm10, mm39)
 ├── examples/                  # NOVA example + output figures
 ├── benchmarks/                # Performance comparison
 └── LICENSE

@@ -1,8 +1,8 @@
 # RNAmotifs
 
-Discover clusters of short RNA motifs (tetramers) that are **positionally enriched**
-around alternatively spliced exons regulated by an RNA-binding protein (RBP), and
-read the resulting **RNA splicing maps**.
+Discover clusters of short RNA motifs (tetramers) — **multivalent RNA motifs (MRMs)**
+in the paper — that are **positionally enriched** around alternatively spliced exons
+regulated by an RNA-binding protein (RBP), and read the resulting **RNA splicing maps**.
 
 > Method reference: Cereda M. *et al.* **RNAmotifs: prediction of multivalent RNA
 > motifs that control alternative splicing.** *Genome Biology* 2014;15(1):R20.
@@ -31,9 +31,9 @@ When you knock down an RBP and run RNA-seq, some cassette exons are **included m
 
 It takes three exon sets — **enhanced**, **silenced**, **control** — scans the
 sequence around each exon's splice sites for every k-mer (tetramers by default),
-finds positions where a motif forms a **multivalent cluster** (several copies close
-together), and tests whether each motif's clusters are **enriched** in the regulated
-sets vs control. The output is an **RNA splicing map** plus a statistically filtered
+finds positions where a motif forms a **multivalent cluster** (an MRM; several copies
+close together), and tests whether each motif's clusters are **enriched** in the
+regulated sets vs control. The output is an **RNA splicing map** plus a statistically filtered
 list of enriched motifs.
 
 ---
