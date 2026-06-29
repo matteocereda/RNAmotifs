@@ -33,6 +33,14 @@ RNAmotifs has been used to identify motifs bound by NOVA, PTBP1, hnRNP C, TARDBP
 
 ## Citation
 
+If you use RNAmotifs v2.0 or the **MaRs** module, please cite the preprint:
+
+> *RNAmotifs2: discovery of multivalent RNA motifs and candidate regulators of splicing.*
+> bioRxiv, 2026.
+> [https://www.biorxiv.org/content/10.64898/2026.01.31.703040v1](https://www.biorxiv.org/content/10.64898/2026.01.31.703040v1)
+
+and the original RNAmotifs method:
+
 > Cereda M, Pozzoli U, Rot G, Juvan P, Schweitzer A, Clark T, Ule J.
 > *RNAmotifs: prediction of multivalent RNA motifs that control alternative splicing.*
 > Genome Biol. 2014;15(1):R20.
@@ -123,8 +131,8 @@ All C++ binaries are self-contained -- no external C++ library dependencies.
 ```bash
 ./rnamotifs examples/NOVA.txt \
     --name NOVA --genome mm9 \
-    --bootstraps 10000 --cores 10 \
-    --p-empirical 0.001 \
+    --bootstraps 1000 --cores 10 \
+    --p-empirical 0.01 \
     --structure --conservation
 ```
 
@@ -196,7 +204,7 @@ See the dedicated [RNAmotifs-MaRs](#rnamotifs-mars) section below.
 
 ## RNAmotifs-MaRs
 
-RNAmotifs-MaRs integrates RNAmotifs motif discovery with eCLIP RBP binding data to compute **MRM-RBP association scores**. It extends the [RNAMaRs](https://github.com/ceredamatteo-lab/theRNAmars) framework by coupling it directly with the RNAmotifs motif enrichment pipeline.
+**MaRs** stands for **M**ultivalent RNA **m**otifs **a**nd candidate **R**egulator**s** of splicing. RNAmotifs-MaRs integrates RNAmotifs motif discovery with eCLIP RBP binding data to compute **MRM-RBP association scores**, linking the enriched multivalent RNA motifs (MRMs) to the RNA-binding proteins likely to regulate them. It extends the [RNAMaRs](https://github.com/ceredamatteo-lab/theRNAmars) framework by coupling it directly with the RNAmotifs motif enrichment pipeline.
 
 ### How it works
 
@@ -270,7 +278,9 @@ Install with `Rscript install_mars_deps.R`. Key packages:
 
 ## Documentation
 
-This README is a high-level overview. Full usage documentation lives in the **[tutorial / wiki](docs/tutorial/)**:
+This README is a high-level overview. The full tutorial is hosted on the lab website at
+**[ceredalab.com/page-rnamotifs.html](https://www.ceredalab.com/page-rnamotifs.html)** and mirrored
+in this repository under **[`docs/tutorial/`](docs/tutorial/)**:
 
 - **[Getting started](docs/tutorial/README.md)** — what RNAmotifs does and how the algorithm works
 - **[Input format](docs/tutorial/input-format.md)** — file layout, the `dIRank` convention, rMATS import
