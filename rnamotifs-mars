@@ -1,0 +1,2083 @@
+#!/usr/bin/env python3
+# RNAmotifs-MaRs - MRM-RBP Association Score pipeline
+# Copyright (C) 2014-2026 Matteo Cereda
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Integrates RNAmotifs motif discovery with eCLIP RBP binding data
+# to compute MRM-RBP association scores (RNAmars algorithm).
+
+"""
+RNAmotifs-MaRs integrates RNAmotifs motif discovery with eCLIP RBP binding
+data to compute MRM-RBP association scores. The pipeline:
+
+  1. Runs RNAmotifs with multiple hw/ew parameter combinations
+  2. Computes signal recovery rate (SCORE1) from eCLIP downsampling
+  3. Computes profile similarity (SCORE2) via cosine similarity
+  4. Generates association score heatmaps
+"""
+
+import argparse
+import csv
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
+import time
+from datetime import datetime, timezone
+
+
+BANNER = r"""
+ ____  _   _    _                    _   _  __
+|  _ \| \ | |  / \   _ __ ___   ___ | |_(_)/ _|___
+| |_) |  \| | / _ \ | '_ ` _ \ / _ \| __| | |_/ __|    __  __       ____
+|  _ <| |\  |/ ___ \| | | | | | (_) | |_| |  _\__ \   |  \/  |__ _ |  _ \ ___
+|_| \_\_| \_/_/   \_\_| |_| |_|\___/ \__|_|_| |___/   | |\/| / _` || |_) / __|
+                                                       |_|  |_\__,_||_| \_\__|
+"""
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def fmt_time(secs):
+    if secs < 0:
+        return "--:--"
+    m, s = divmod(int(secs), 60)
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m" if h > 0 else f"{m:02d}:{s:02d}"
+
+
+def find_root():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def step(msg):
+    print(f"\n  --> {msg}")
+
+
+def run(cmd, env=None, cwd=None, capture=False):
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
+    if capture:
+        result = subprocess.run(cmd, shell=True, env=run_env, cwd=cwd,
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode, cmd,
+                output=result.stdout, stderr=result.stderr)
+        return result
+    subprocess.check_call(cmd, shell=True, env=run_env, cwd=cwd)
+
+
+def r_env():
+    r_libs = os.environ.get("R_LIBS_USER",
+                            os.path.expanduser("~/R/library"))
+    return {"R_LIBS_USER": r_libs}
+
+
+def run_r_code(code, env=None, cwd=None, label="R script"):
+    """Run R code from a temp file instead of inline -e for robustness."""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.R', delete=False) as f:
+        f.write(code)
+        f.flush()
+        tmp_path = f.name
+    try:
+        result = run(f'Rscript {tmp_path}', env=env, cwd=cwd, capture=True)
+        return result
+    except subprocess.CalledProcessError as e:
+        stderr = getattr(e, 'stderr', '') or ''
+        stdout = getattr(e, 'output', '') or ''
+        print(f"    ERROR in {label}:")
+        if stderr:
+            for line in stderr.strip().splitlines()[-5:]:
+                print(f"      {line}")
+        if stdout:
+            for line in stdout.strip().splitlines()[-3:]:
+                print(f"      {line}")
+        raise
+    finally:
+        os.unlink(tmp_path)
+
+
+def check_r_deps():
+    """Check and install R packages needed by the MaRs pipeline."""
+    r_script = r"""
+    cran_pkgs <- c("circlize", "viridis", "BAMMtools", "snow", "lsa",
+                   "optparse", "data.table", "stringr", "rlang", "dplyr",
+                   "plyr", "tidyr", "lattice", "latticeExtra", "bootstrap",
+                   "reshape2")
+    missing <- cran_pkgs[!sapply(cran_pkgs, requireNamespace, quietly=TRUE)]
+    if (length(missing) > 0) {
+        cat("Installing CRAN packages:", paste(missing, collapse=", "), "\n")
+        install.packages(missing, repos="https://cloud.r-project.org",
+                         quiet=TRUE)
+    }
+    if (!requireNamespace("ComplexHeatmap", quietly=TRUE)) {
+        if (!requireNamespace("BiocManager", quietly=TRUE))
+            install.packages("BiocManager", repos="https://cloud.r-project.org")
+        cat("Installing ComplexHeatmap from Bioconductor...\n")
+        BiocManager::install("ComplexHeatmap", ask=FALSE, update=FALSE)
+    }
+    cat("R dependencies OK\n")
+    """
+    try:
+        run(f'Rscript -e \'{r_script}\'', env=r_env())
+    except subprocess.CalledProcessError:
+        print("  WARNING: Could not install some R dependencies.")
+        print("  Run: Rscript install_mars_deps.R")
+
+
+def read_optimal_parameters(mars_dir):
+    """Read the RNAmotifs optimal parameters CSV and return as list of dicts."""
+    csv_path = os.path.join(mars_dir, "Tables", "RNAmotifs_optimal_parameters.csv")
+    if not os.path.isfile(csv_path):
+        sys.exit(f"Error: optimal parameters file not found: {csv_path}")
+    rows = []
+    with open(csv_path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(row)
+    return rows
+
+
+def get_rbps_for_cell_line(cell_line):
+    """Return the list of training RBPs for a given cell line."""
+    if cell_line == "HepG2":
+        return ["HNRNPC", "HNRNPK", "HNRNPU", "NCBP2", "PRPF8", "PTBP1",
+                "QKI", "RBFOX2", "RBM22", "SF3A3", "SF3B4", "SRSF1",
+                "U2AF1", "U2AF2", "UCHL5"]
+    elif cell_line == "K562":
+        return ["AGGF1", "EFTUD2", "FXR1", "HNRNPU", "PRPF8", "PTBP1",
+                "PUS1", "RBM15", "SF3B4", "SRSF1", "TARDBP", "U2AF1", "U2AF2"]
+    else:
+        sys.exit(f"Error: unsupported cell line '{cell_line}'. Use HepG2 or K562.")
+
+
+def get_needed_param_combos(opt_params, rbps):
+    """Determine which (hw, ew) combos are needed for the selected RBPs."""
+    combos = set()
+    for row in opt_params:
+        if row["true_rbp"] in rbps:
+            combos.add((int(row["hw"]), int(row["ew"])))
+    return sorted(combos)
+
+
+def find_rnamotifs_result_dir(results_parent, run_name):
+    """Find the actual results directory created by rnamotifs.
+
+    New layout: results/{run_name}/{date}_{genome}_w{hw}_...
+    Old layout: results/{date}_{run_name}_{genome}_w{hw}_...
+
+    run_name is the RBP name passed as -n to rnamotifs.
+    Returns the most recent matching directory.
+    """
+    import re
+
+    # New layout: results/{run_name}/<dated subdirs>
+    new_dir = os.path.join(results_parent, run_name)
+    if os.path.isdir(new_dir):
+        subdirs = sorted(glob.glob(os.path.join(new_dir, "*")))
+        subdirs = [d for d in subdirs if os.path.isdir(d)]
+        if subdirs:
+            return subdirs[-1]  # Most recent (date-prefixed, sorted)
+
+    # Old layout: results/*_{run_name}_{genome}_*
+    pattern = os.path.join(results_parent, f"*_{run_name}_*")
+    matches = sorted(glob.glob(pattern))
+    genome_re = re.compile(
+        re.escape(run_name) + r'_(hg19|hg38|mm9|mm10|mm39)_')
+    filtered = [m for m in matches if genome_re.search(os.path.basename(m))]
+    if filtered:
+        return filtered[-1]
+    if matches:
+        return matches[-1]
+    return None
+
+
+# ── Manifest (intelligent caching) ──────────────────────────────────────────
+
+def _now_iso():
+    """Return current UTC timestamp in ISO 8601 format."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def load_manifest(mars_output):
+    """Load mars_manifest.json from the MaRs output directory, or create a
+    fresh skeleton if the file does not exist."""
+    path = os.path.join(mars_output, "mars_manifest.json")
+    if os.path.isfile(path):
+        with open(path) as f:
+            return json.load(f)
+    return {
+        "name": None,
+        "cell_line": None,
+        "genome": None,
+        "phase1": {},
+        "phase2": {"status": "pending"},
+        "phase3": {"status": "pending"},
+    }
+
+
+def save_manifest(mars_output, manifest):
+    """Atomically write the manifest via tmp-file + rename."""
+    path = os.path.join(mars_output, "mars_manifest.json")
+    fd, tmp = tempfile.mkstemp(dir=mars_output, suffix=".json.tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(manifest, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)          # atomic on POSIX
+    except BaseException:
+        # Clean up partial temp file on any error
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def check_rnamotifs_complete(result_dir, bootstraps):
+    """Return True if a raw rnamotifs run directory has all required outputs.
+
+    Required: bootstrap_{N}.tsv, data/counts/r/, data/counts/nr/
+    """
+    if result_dir is None or not os.path.isdir(result_dir):
+        return False
+    tsv = os.path.join(result_dir, f"bootstrap_{bootstraps}.tsv")
+    counts_r = os.path.join(result_dir, "data", "counts", "r")
+    counts_nr = os.path.join(result_dir, "data", "counts", "nr")
+    return (os.path.isfile(tsv)
+            and os.path.isdir(counts_r)
+            and os.path.isdir(counts_nr))
+
+
+def check_mars_conversion_complete(compat_dir, bootstraps):
+    """Return True if the MARS-format conversion directory is fully populated.
+
+    Required: bootstrap_{N}.Rdata AND (enriched_tetramers.txt OR no_enriched.txt)
+    """
+    if not os.path.isdir(compat_dir):
+        return False
+    rdata = os.path.join(compat_dir, f"bootstrap_{bootstraps}.Rdata")
+    enriched = os.path.join(compat_dir, "enriched_tetramers.txt")
+    no_enriched = os.path.join(compat_dir, "no_enriched.txt")
+    return os.path.isfile(rdata) and (os.path.isfile(enriched)
+                                       or os.path.isfile(no_enriched))
+
+
+def _count_enriched_tetramers(compat_dir):
+    """Count the number of enriched tetramers from the enriched_tetramers.txt
+    file. Returns 0 if the file is missing or empty, or if no_enriched.txt
+    exists."""
+    no_enriched = os.path.join(compat_dir, "no_enriched.txt")
+    if os.path.isfile(no_enriched):
+        return 0
+    enriched = os.path.join(compat_dir, "enriched_tetramers.txt")
+    if not os.path.isfile(enriched):
+        return 0
+    count = 0
+    with open(enriched) as f:
+        for line in f:
+            if line.strip():
+                count += 1
+    return count
+
+
+def check_phase2_complete(mars_output, name):
+    """Return True if Phase 2 score TSV files exist."""
+    scores_dir = os.path.join(mars_output, "scores")
+    patterns = [
+        f"association_scores_enh_{name}.tsv",
+        f"association_scores_sil_{name}.tsv",
+        f"rbp_ranking_{name}.tsv",
+    ]
+    return all(os.path.isfile(os.path.join(scores_dir, p)) for p in patterns)
+
+
+def check_phase3_complete(mars_output, name, cell_line):
+    """Return True if heatmap PDFs exist for both enh and sil."""
+    scores_dir = os.path.join(mars_output, "scores")
+    patterns = [
+        f"{cell_line}_{name}_enh.pdf",
+        f"{cell_line}_{name}_sil.pdf",
+    ]
+    return all(os.path.isfile(os.path.join(scores_dir, p)) for p in patterns)
+
+
+def _combo_key(hw, ew):
+    """Canonical manifest key for an (hw, ew) combination."""
+    return f"hw{hw}_ew{ew}"
+
+
+def print_phase1_status(manifest, param_combos):
+    """Print a human-readable status table for Phase 1 parameter combos."""
+    phase1 = manifest.get("phase1", {})
+    n_complete = 0
+    n_failed = 0
+    n_pending = 0
+
+    print("  Phase 1: RNAmotifs parameter sweep")
+    print("  " + "-" * 50)
+
+    for hw, ew in param_combos:
+        key = _combo_key(hw, ew)
+        info = phase1.get(key, {})
+        status = info.get("status", "pending")
+        n_tet = info.get("enriched_tetramers", "?")
+
+        if status == "complete":
+            n_complete += 1
+            label = f"complete ({n_tet} tetramers)"
+            marker = "+"
+        elif status == "failed":
+            n_failed += 1
+            error = info.get("error", "unknown error")
+            label = f"failed ({error})"
+            marker = "x"
+        else:
+            n_pending += 1
+            label = "pending"
+            marker = "o"
+
+        print(f"  {marker} {key:<16} {label}")
+
+    print("  " + "-" * 50)
+    total = len(param_combos)
+    print(f"  {n_complete}/{total} complete, "
+          f"{n_failed} failed, {n_pending} pending")
+    print()
+
+
+# ── Format conversion ────────────────────────────────────────────────────────
+
+def convert_to_mars_format(rnamotifs_result_dir, mars_compat_dir,
+                           bootstraps, p_fisher, p_empirical,
+                           in_exon, in_intron, r_mars_dir):
+    """Convert rnamotifs v2 output to the old format expected by MARS R scripts.
+
+    Creates a MARS-compatible directory with:
+    - bootstrap_{N}.Rdata (converted from TSV)
+    - enriched_tetramers.txt
+    - regions.csv
+    - Splicing map CSVs (e-*, s-*, All_group_*, Sil_group_*, Enh_group_*)
+    - data/counts/{r,nr}/ symlinks for tetramer counting data
+    """
+    os.makedirs(mars_compat_dir, exist_ok=True)
+
+    # The rnamotifs v2 output structure:
+    #   {rnamotifs_result_dir}/
+    #     bootstrap_{N}.tsv
+    #     data/counts/{r,nr}/  (filelist_count.tsv, *_region_count.tsv, *.bed)
+    #     MRMs_*.csv
+    #     MRMs_*.Rdata  (contains outRes and df_enriched_tetramers)
+
+    tsv_file = os.path.join(rnamotifs_result_dir,
+                            f"bootstrap_{bootstraps}.tsv")
+    rdata_files = glob.glob(os.path.join(rnamotifs_result_dir, "MRMs_*.Rdata"))
+    counts_dir = os.path.join(rnamotifs_result_dir, "data", "counts")
+
+    # Step 1: Create symlinks for r/ and nr/ count directories
+    for sub in ["r", "nr"]:
+        src = os.path.join(counts_dir, sub)
+        dst = os.path.join(mars_compat_dir, sub)
+        if os.path.exists(src) and not os.path.exists(dst):
+            os.symlink(os.path.abspath(src), dst)
+
+    # Also symlink the bootstrap TSV for C++ --summary reading
+    tsv_dst = os.path.join(mars_compat_dir,
+                           f"bootstrap_{bootstraps}.tsv")
+    if os.path.exists(tsv_file) and not os.path.exists(tsv_dst):
+        os.symlink(os.path.abspath(tsv_file), tsv_dst)
+
+    # Step 2: Convert bootstrap TSV to .Rdata format
+    # The old bootstrap-FDR.R saves 'outRes' data.frame with columns:
+    #   tetramer, r1enh_pFis, r1enh_pEmp, r1sil_pFis, r1sil_pEmp, ...
+    # The new bootstrap TSV has the same columns.
+    rdata_out = os.path.join(mars_compat_dir,
+                             f"bootstrap_{bootstraps}.Rdata")
+
+    if not os.path.exists(rdata_out):
+        if os.path.exists(tsv_file):
+            # Convert TSV to Rdata (set tetramer names as row names)
+            r_code = (
+                f'outRes <- read.delim("{tsv_file}", '
+                f'stringsAsFactors = FALSE)\n'
+                f'rownames(outRes) <- outRes$tetramer\n'
+                f'save(outRes, file = "{rdata_out}")\n'
+                f'cat("Saved", nrow(outRes), "tetramers to Rdata\\n")\n'
+            )
+            try:
+                run_r_code(r_code, env=r_env(),
+                           label="TSV->Rdata conversion")
+            except subprocess.CalledProcessError:
+                print(f"    WARNING: Could not convert bootstrap TSV for "
+                      f"{mars_compat_dir}")
+                return False
+        elif rdata_files:
+            # If there's already an Rdata file from the MRM step, extract outRes
+            r_code = (
+                f'load("{rdata_files[0]}")\n'
+                f'if (!exists("outRes")) stop("outRes not found in Rdata")\n'
+                f'save(outRes, file = "{rdata_out}")\n'
+            )
+            try:
+                run_r_code(r_code, env=r_env(),
+                           label="Rdata extraction")
+            except subprocess.CalledProcessError:
+                print(f"    WARNING: Could not convert bootstrap data for "
+                      f"{mars_compat_dir}")
+                return False
+
+    if not os.path.exists(rdata_out):
+        print(f"    WARNING: No bootstrap data found for {rnamotifs_result_dir}")
+        return False
+
+    # Step 3: Ensure filelist.txt files exist in count directories
+    # (needed by the old getTables R function)
+    for sub in ["r", "nr"]:
+        src_dir = os.path.join(counts_dir, sub)
+        if not os.path.isdir(src_dir):
+            continue
+        flist_dst = os.path.join(src_dir, "filelist.txt")
+        if not os.path.exists(flist_dst):
+            bed_files = sorted(f for f in os.listdir(src_dir)
+                               if f.endswith(".bed"))
+            if bed_files:
+                with open(flist_dst, "w") as fh:
+                    for bf in bed_files:
+                        fh.write(bf + "\n")
+
+    mars_compat_parent = os.path.dirname(mars_compat_dir.rstrip("/"))
+    mars_compat_name = os.path.basename(mars_compat_dir.rstrip("/"))
+
+    # Ensure the conf/config_RNAmotifs.R symlink exists for R scripts that
+    # call source("conf/config_RNAmotifs.R") relative to their cwd.
+    conf_dir = os.path.join(r_mars_dir, "conf")
+    conf_file = os.path.join(conf_dir, "config_RNAmotifs.R")
+    os.makedirs(conf_dir, exist_ok=True)
+    target = os.path.join(find_root(), "src", "R", "config.R")
+    if os.path.islink(conf_file):
+        if os.readlink(conf_file) != target:
+            os.remove(conf_file)
+            os.symlink(target, conf_file)
+    elif not os.path.exists(conf_file):
+        os.symlink(target, conf_file)
+
+    # Step 4: Run selection_of_tetramers.R to generate enriched_tetramers.txt
+    # and per-tetramer splicing map CSVs (e-*, s-*, ES-*)
+    # Args: <wd> <pr_folder> <bootstraps> <p_fisher> <p_empirical> <inExon> <inIntron>
+    # Must run from a directory containing conf/config_RNAmotifs.R
+    enriched_tets = os.path.join(mars_compat_dir, "enriched_tetramers.txt")
+    no_enriched_marker = os.path.join(mars_compat_dir, "no_enriched.txt")
+    if not os.path.exists(enriched_tets) and not os.path.exists(no_enriched_marker):
+        sel_script = os.path.join(r_mars_dir, "selection_of_tetramers.R")
+        try:
+            result = run(
+                f"Rscript {sel_script} {mars_compat_parent} "
+                f"{mars_compat_name} {bootstraps} "
+                f"{p_fisher} {p_empirical} {in_exon} {in_intron}",
+                env=r_env(), cwd=r_mars_dir, capture=True)
+            if result.stdout:
+                for line in result.stdout.strip().splitlines():
+                    print(f"      {line}")
+        except subprocess.CalledProcessError as e:
+            stderr = getattr(e, 'stderr', '') or ''
+            stdout = getattr(e, 'output', '') or ''
+            print(f"    WARNING: selection_of_tetramers.R failed for "
+                  f"{mars_compat_name}")
+            if stderr:
+                for line in stderr.strip().splitlines()[-5:]:
+                    print(f"      {line}")
+            if stdout:
+                for line in stdout.strip().splitlines()[-3:]:
+                    print(f"      {line}")
+            # Not fatal - enriched_tetramers.txt might still have been created
+
+    # Handle "no enriched tetramers" case: if selection_of_tetramers.R ran but
+    # produced an empty enriched_tetramers.txt (or none at all), create the
+    # no_enriched.txt marker so we know not to re-run.
+    if os.path.exists(enriched_tets):
+        with open(enriched_tets) as f:
+            content = f.read().strip()
+        if not content:
+            # Empty file -- zero enriched tetramers
+            with open(no_enriched_marker, "w") as f:
+                f.write("No enriched tetramers found for this parameter "
+                        "combination.\n")
+    elif not os.path.exists(no_enriched_marker):
+        # selection_of_tetramers.R did not produce the file at all
+        with open(no_enriched_marker, "w") as f:
+            f.write("No enriched tetramers found for this parameter "
+                    "combination.\n")
+
+    # Step 5: Run sign_reg_plot.R to generate regions.csv
+    # Args: <res_dir> <pr_folder>
+    # Requires enriched_tetramers.txt from Step 4
+    sign_reg_script = os.path.join(r_mars_dir, "sign_reg_plot.R")
+    regions_csv = os.path.join(mars_compat_dir, "regions.csv")
+    if not os.path.exists(regions_csv) and os.path.exists(enriched_tets):
+        n_tet = _count_enriched_tetramers(mars_compat_dir)
+        if n_tet > 0:
+            try:
+                run(f"Rscript {sign_reg_script} {mars_compat_parent} "
+                    f"{mars_compat_name} {bootstraps} {p_empirical}",
+                    env=r_env(), cwd=r_mars_dir, capture=True)
+            except subprocess.CalledProcessError as e:
+                stderr = getattr(e, 'stderr', '') or ''
+                print(f"    WARNING: sign_reg_plot.R failed for {mars_compat_name}")
+                if stderr:
+                    for line in stderr.strip().splitlines()[-5:]:
+                        print(f"      {line}")
+                return False
+
+    # Step 6: Run selection_of_tetramers_old_subset.R for group splicing maps
+    # (All_group_*, Sil_group_*, Enh_group_*)
+    old_subset_script = os.path.join(r_mars_dir,
+                                     "selection_of_tetramers_old_subset.R")
+    group_files = glob.glob(os.path.join(mars_compat_dir, "All_group_*"))
+    if not group_files and os.path.exists(enriched_tets):
+        n_tet = _count_enriched_tetramers(mars_compat_dir)
+        if n_tet > 0:
+            try:
+                run(f"Rscript {old_subset_script} {mars_compat_parent} "
+                    f"{mars_compat_name} {bootstraps} "
+                    f"{p_fisher} {p_empirical} {in_exon} {in_intron}",
+                    env=r_env(), cwd=r_mars_dir, capture=True)
+            except subprocess.CalledProcessError as e:
+                stderr = getattr(e, 'stderr', '') or ''
+                print(f"    WARNING: selection_of_tetramers_old_subset.R failed for "
+                      f"{mars_compat_name}")
+                if stderr:
+                    for line in stderr.strip().splitlines()[-5:]:
+                        print(f"      {line}")
+
+    return True
+
+
+# ── Discovery mode ────────────────────────────────────────────────────────────
+
+def run_discovery_mode(args, root, mars_dir, eclip_dir):
+    """Discovery mode: train optimal RNAmotifs parameters per RBP.
+
+    For each RBP with knockdown data, runs RNAmotifs across a parameter grid
+    and selects the (hw, ew) that maximizes the association score.
+    """
+    if not args.mars_exons_dir:
+        sys.exit("Error: --mars-exons-dir is required for discovery mode")
+
+    mars_exons_dir = os.path.abspath(args.mars_exons_dir)
+    if not os.path.isdir(mars_exons_dir):
+        sys.exit(f"Error: mars-exons-dir not found: {mars_exons_dir}")
+
+    rnamotifs_bin = os.path.join(root, "rnamotifs")
+    if not os.path.isfile(rnamotifs_bin):
+        sys.exit(f"Error: rnamotifs binary not found at {rnamotifs_bin}")
+
+    mars_score_bin = os.path.join(root, "build", "rnamotifs_mars_score")
+    if not os.path.isfile(mars_score_bin):
+        sys.exit(f"Error: rnamotifs_mars_score binary not found. "
+                 f"Run: cmake --build build")
+
+    r_mars_dir = os.path.join(root, "src", "R", "mars")
+    results_parent = os.path.join(root, "results")
+    rbps = get_rbps_for_cell_line(args.cell_line)
+
+    # Discovery output directory: results/MaRs_discovery/<cell_line>_<genome>/
+    # No date prefix — discovery is resumable across days via manifest
+    ii_suffix = f"_ii{args.in_intron}" if args.in_intron != 300 else ""
+    disc_subdir = f"{args.cell_line}_{args.genome}{ii_suffix}{args.disc_suffix}"
+    disc_output = os.path.join(root, "results", "MaRs_discovery", disc_subdir, "")
+    os.makedirs(disc_output, exist_ok=True)
+
+    # Manifest for crash-safe resumption
+    manifest_path = os.path.join(disc_output, "discovery_manifest.json")
+    if os.path.isfile(manifest_path):
+        with open(manifest_path) as f:
+            disc_manifest = json.load(f)
+    else:
+        disc_manifest = {"rbps": {}, "cell_line": args.cell_line}
+
+    def save_disc_manifest():
+        fd, tmp = tempfile.mkstemp(dir=disc_output, suffix=".json.tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(disc_manifest, f, indent=2)
+                f.write("\n")
+            os.replace(tmp, manifest_path)
+        except BaseException:
+            try: os.unlink(tmp)
+            except OSError: pass
+            raise
+
+    hw_grid = args.param_grid_hw
+    ew_grid = args.param_grid_ew
+    param_combos = [(hw, ew) for hw in hw_grid for ew in ew_grid]
+
+    print(BANNER)
+    print(f"""
+  DISCOVERY MODE
+  {'=' * 60}
+  Cell line        : {args.cell_line}
+  Genome           : {args.genome}
+  Mars exons dir   : {mars_exons_dir}
+  eCLIP directory  : {eclip_dir}
+  MaRs data dir    : {mars_dir}
+  Cores            : {args.cores}
+  Bootstraps       : {args.bootstraps}
+  In-exon          : {args.in_exon}
+  In-intron        : {args.in_intron}
+  n grid (=2*hw)   : {[2 * h for h in hw_grid]}  (hw: {hw_grid})
+  e grid           : {ew_grid}
+  Parameter combos : {len(param_combos)}
+  Training RBPs    : {len(rbps)}
+  Output           : {disc_output}
+  {'=' * 60}
+""")
+
+    # Find which RBPs have exon files
+    available_rbps = []
+    for rbp in rbps:
+        exon_file = os.path.join(mars_exons_dir, f"{rbp}_input_rnamotifs.txt")
+        if os.path.isfile(exon_file):
+            available_rbps.append(rbp)
+        else:
+            print(f"  WARNING: No exon file for {rbp}, skipping")
+
+    if not available_rbps:
+        sys.exit("Error: no RBP exon files found in " + mars_exons_dir)
+
+    print(f"\n  {len(available_rbps)} RBPs with exon data: "
+          f"{', '.join(available_rbps)}")
+
+    pipeline_t0 = time.time()
+    optimal_results = []
+
+    for rbp_idx, rbp in enumerate(available_rbps, 1):
+        print(f"\n{'=' * 60}")
+        print(f"  [{rbp_idx}/{len(available_rbps)}] {rbp}")
+        print(f"{'=' * 60}")
+
+        # Check if already done
+        rbp_info = disc_manifest.get("rbps", {}).get(rbp, {})
+        if rbp_info.get("status") == "complete":
+            print(f"  Already complete: hw={rbp_info['best_hw']} "
+                  f"ew={rbp_info['best_ew']} "
+                  f"AUROC={rbp_info['best_score']:.4f}")
+            optimal_results.append({
+                "true_rbp": rbp,
+                "hw": rbp_info["best_hw"],
+                "ew": rbp_info["best_ew"],
+                "in_intron": args.in_intron,
+                "params": f"hw_{rbp_info['best_hw']}_ew_{rbp_info['best_ew']}",
+                "score": rbp_info["best_score"],
+            })
+            continue
+
+        exon_file = os.path.join(mars_exons_dir, f"{rbp}_input_rnamotifs.txt")
+        rbp_sweep_dir = os.path.join(disc_output, rbp, "sweep", "")
+        rbp_scores_dir = os.path.join(disc_output, rbp, "scores", "")
+        os.makedirs(rbp_sweep_dir, exist_ok=True)
+        os.makedirs(rbp_scores_dir, exist_ok=True)
+
+        best_score = -1
+        best_hw, best_ew = hw_grid[0], ew_grid[0]
+        combo_scores = rbp_info.get("combo_scores", {})
+
+        for ci, (hw, ew) in enumerate(param_combos, 1):
+            combo_key = f"hw_{hw}_ew_{ew}"
+
+            # Check if this combo already scored
+            if combo_key in combo_scores:
+                score = combo_scores[combo_key]
+                print(f"    [{ci}/{len(param_combos)}] {combo_key}: "
+                      f"cached score={score:.4f}")
+                if score > best_score:
+                    best_score = score
+                    best_hw, best_ew = hw, ew
+                continue
+
+            kmer_suffix = f"_k{args.kmer_size}" if hasattr(args, 'kmer_size') and args.kmer_size != 4 else ""
+            run_name = f"{rbp}_{combo_key}{kmer_suffix}{args.disc_suffix}"
+            mars_compat_dir = os.path.join(rbp_sweep_dir, run_name)
+
+            # Phase 1a: Run rnamotifs
+            rnamotifs_result_dir = find_rnamotifs_result_dir(
+                results_parent, run_name)
+            needs_run = not check_rnamotifs_complete(
+                rnamotifs_result_dir, args.bootstraps)
+
+            if needs_run:
+                kmer_flag = f" -k {args.kmer_size}" if hasattr(args, 'kmer_size') and args.kmer_size != 4 else ""
+                cmd = (
+                    f"{rnamotifs_bin} {exon_file} "
+                    f"-n {run_name} "
+                    f"-g {args.genome} "
+                    f"--n {2 * hw} "
+                    f"-m {args.min_height} "
+                    f"-p {args.pth} "
+                    f"-e {ew} "
+                    f"--in-exon {args.in_exon} "
+                    f"--in-intron {args.in_intron} "
+                    f"-b {args.bootstraps} "
+                    f"-c {args.cores} "
+                    f"--p-fisher {args.p_fisher} "
+                    f"--p-empirical {args.p_empirical}"
+                    f"{' --event-type ' + args.event_type if hasattr(args, 'event_type') and args.event_type != 'SE' else ''}"
+                    f"{kmer_flag}"
+                )
+
+                try:
+                    run(cmd)
+                except subprocess.CalledProcessError as e:
+                    print(f"    [{ci}/{len(param_combos)}] {combo_key}: "
+                          f"rnamotifs failed (exit {e.returncode})")
+                    combo_scores[combo_key] = 0.0
+                    continue
+
+                rnamotifs_result_dir = find_rnamotifs_result_dir(
+                    results_parent, run_name)
+
+            if rnamotifs_result_dir is None:
+                combo_scores[combo_key] = 0.0
+                continue
+
+            # Phase 1b: Convert to MARS format
+            if not check_mars_conversion_complete(
+                    mars_compat_dir, args.bootstraps):
+                ok = convert_to_mars_format(
+                    rnamotifs_result_dir, mars_compat_dir,
+                    args.bootstraps, args.p_fisher, args.p_empirical,
+                    args.in_exon, args.in_intron, r_mars_dir)
+                if not ok:
+                    combo_scores[combo_key] = 0.0
+                    continue
+
+            n_tet = _count_enriched_tetramers(mars_compat_dir)
+            if n_tet == 0:
+                print(f"    [{ci}/{len(param_combos)}] {combo_key}: "
+                      f"no enriched tetramers")
+                combo_scores[combo_key] = 0.0
+                continue
+
+            # Phase 2: Score ALL RBPs for this combo (needed for AUROC)
+            tmp_params_dir = os.path.join(rbp_scores_dir, "tmp_params")
+            os.makedirs(os.path.join(tmp_params_dir, "Tables"), exist_ok=True)
+            tmp_opt_csv = os.path.join(tmp_params_dir, "Tables",
+                                       "RNAmotifs_optimal_parameters.csv")
+            with open(tmp_opt_csv, "w") as tf:
+                tf.write('"params","true_rbp","hw","ew"\n')
+                for all_rbp in available_rbps:
+                    tf.write(f'"{combo_key}","{all_rbp}","{hw}","{ew}"\n')
+
+            # Copy AUC file if it exists, otherwise create a dummy
+            auc_dst_dir = os.path.join(tmp_params_dir, "Rdata")
+            os.makedirs(auc_dst_dir, exist_ok=True)
+            auc_src = os.path.join(mars_dir, "Rdata",
+                                   f"{args.cell_line}_AUC.tsv")
+            auc_dst = os.path.join(auc_dst_dir,
+                                   f"{args.cell_line}_AUC.tsv")
+            if os.path.isfile(auc_src):
+                shutil.copy2(auc_src, auc_dst)
+            elif not os.path.isfile(auc_dst):
+                # Create dummy AUC with value 1.0 for all RBPs
+                with open(auc_dst, "w") as af:
+                    af.write("rbp\tauc\n")
+                    for all_rbp in available_rbps:
+                        af.write(f"{all_rbp}_enh\t1.0\n")
+                        af.write(f"{all_rbp}_sil\t1.0\n")
+
+            combo_score_dir = os.path.join(rbp_scores_dir, combo_key, "")
+            os.makedirs(combo_score_dir, exist_ok=True)
+
+            cmd = (
+                f"{mars_score_bin} "
+                f"-i {exon_file} "
+                f"-n {rbp} "
+                f"-d {rbp_sweep_dir} "
+                f"-r {tmp_params_dir} "
+                f"-c {args.cell_line} "
+                f"-p {args.cores} "
+                f"-e {eclip_dir} "
+                f"-o {combo_score_dir} "
+                f"--in-exon {args.in_exon} "
+                f"--in-intron {args.in_intron} "
+                f"-b {args.bootstraps} "
+                f"--score-mode {args.score_mode}"
+            )
+
+            try:
+                run(cmd)
+            except subprocess.CalledProcessError as e:
+                print(f"    [{ci}/{len(param_combos)}] {combo_key}: "
+                      f"mars_score failed (exit {e.returncode})")
+                combo_scores[combo_key] = 0.0
+                continue
+
+            # Compute AUROC from association score matrix
+            # Paper Fig S3: AUROC where true RBP is positive, others negative
+            score = 0.0
+            for direction in ["enh", "sil"]:
+                as_file = os.path.join(combo_score_dir,
+                    f"association_scores_{direction}_{rbp}.tsv")
+                if not os.path.isfile(as_file):
+                    continue
+                # Read RBP × tetramer score matrix
+                true_scores = []
+                other_scores = []
+                with open(as_file) as af:
+                    header = next(af)  # rbp\ttet1\ttet2...
+                    for aline in af:
+                        parts = aline.strip().split("\t")
+                        if len(parts) < 2:
+                            continue
+                        rbp_name = parts[0]
+                        vals = [float(v) for v in parts[1:] if v]
+                        if rbp_name == rbp:
+                            true_scores.extend(vals)
+                        else:
+                            other_scores.extend(vals)
+                # AUROC: fraction of (true, other) pairs where true > other
+                if true_scores and other_scores:
+                    n_pos = len(true_scores)
+                    n_neg = len(other_scores)
+                    wins = 0
+                    ties = 0
+                    for ts in true_scores:
+                        for os_val in other_scores:
+                            if ts > os_val:
+                                wins += 1
+                            elif ts == os_val:
+                                ties += 1
+                    auroc = (wins + 0.5 * ties) / (n_pos * n_neg)
+                    if auroc > score:
+                        score = auroc
+
+            combo_scores[combo_key] = score
+            print(f"    [{ci}/{len(param_combos)}] {combo_key}: "
+                  f"AUROC={score:.4f} ({n_tet} tetramers)")
+
+            if score > best_score:
+                best_score = score
+                best_hw, best_ew = hw, ew
+
+            # Save progress after each combo
+            disc_manifest.setdefault("rbps", {})[rbp] = {
+                "status": "in_progress",
+                "combo_scores": combo_scores,
+                "timestamp": _now_iso(),
+            }
+            save_disc_manifest()
+
+        # Record best for this RBP
+        print(f"\n  {rbp}: best={best_hw},{best_ew} AUROC={best_score:.4f}")
+        disc_manifest["rbps"][rbp] = {
+            "status": "complete",
+            "best_hw": best_hw,
+            "best_ew": best_ew,
+            "best_score": best_score,
+            "combo_scores": combo_scores,
+            "timestamp": _now_iso(),
+        }
+        save_disc_manifest()
+
+        optimal_results.append({
+            "true_rbp": rbp,
+            "hw": best_hw,
+            "ew": best_ew,
+            "in_intron": args.in_intron,
+            "params": f"hw_{best_hw}_ew_{best_ew}",
+            "score": best_score,
+        })
+
+        # Clean up intermediate results to save disk
+        for ci, (hw, ew) in enumerate(param_combos):
+            combo_key = f"hw_{hw}_ew_{ew}"
+            if hw == best_hw and ew == best_ew:
+                continue  # keep best
+            combo_score_dir = os.path.join(rbp_scores_dir, combo_key)
+            if os.path.isdir(combo_score_dir):
+                shutil.rmtree(combo_score_dir)
+
+    # ── Write optimal parameters CSV ─────────────────────────────────────
+    tables_dir = os.path.join(mars_dir, "Tables")
+    os.makedirs(tables_dir, exist_ok=True)
+    opt_csv_path = os.path.join(tables_dir, "RNAmotifs_optimal_parameters.csv")
+
+    # Merge with existing entries: keep best score per RBP across
+    # different in_intron values and cell lines
+    existing = {}
+    if os.path.isfile(opt_csv_path):
+        with open(opt_csv_path) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                row.setdefault("in_intron", "300")
+                row.setdefault("score", "0")
+                existing[row["true_rbp"]] = row
+
+    for res in optimal_results:
+        rbp = res["true_rbp"]
+        prev = existing.get(rbp)
+        if prev is None or float(res.get("score", 0)) > float(prev.get("score", 0)):
+            existing[rbp] = res
+
+    with open(opt_csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=["params", "true_rbp", "hw", "ew", "in_intron"],
+            quoting=csv.QUOTE_ALL)
+        writer.writeheader()
+        for rbp_name in sorted(existing):
+            row = existing[rbp_name]
+            ii = row.get("in_intron", "300")
+            writer.writerow({
+                "params": row.get("params", f"hw_{row['hw']}_ew_{row['ew']}"),
+                "true_rbp": row["true_rbp"],
+                "hw": row["hw"],
+                "ew": row["ew"],
+                "in_intron": ii,
+            })
+    print(f"\n  Wrote optimal parameters: {opt_csv_path}")
+
+    # ── Compute PEAK binding profiles ────────────────────────────────────
+    step("Computing PEAK binding profiles")
+    rdata_dir = os.path.join(mars_dir, "Rdata", "")
+    os.makedirs(rdata_dir, exist_ok=True)
+
+    cmd = (
+        f"{mars_score_bin} --compute-peak "
+        f"--mars-exons-dir {mars_exons_dir} "
+        f"-e {eclip_dir} "
+        f"-o {rdata_dir} "
+        f"-c {args.cell_line} "
+        f"-p {args.cores} "
+        f"--in-exon {args.in_exon} "
+        f"--in-intron {args.in_intron}"
+    )
+
+    try:
+        run(cmd)
+        print("  PEAK profiles computed")
+    except subprocess.CalledProcessError as e:
+        print(f"  WARNING: PEAK computation failed (exit {e.returncode})")
+
+    # ── DO NOT overwrite the SRR reference (AUC.tsv) ─────────────────────
+    # AUC.tsv holds the SRR weight (SCORE1) consumed by rnamotifs_mars_score
+    # (mars_score.cpp: "Read AUC scores (SCORE1)"). It MUST come from
+    # --compute-peak (_SRR.tsv, copied to _AUC.tsv by the pipeline) and must
+    # NOT be replaced with the per-RBP association scores: doing so collapses
+    # the reference to ~0 and makes AS = CS*SRR = 0 on the next run. The
+    # association scores are already persisted per-combo (association_scores_*.tsv)
+    # and in the rankings, so nothing is lost by leaving the reference intact.
+    auc_path = os.path.join(rdata_dir, f"{args.cell_line}_AUC.tsv")
+    print(f"  Preserving SRR reference (not overwriting): {auc_path}")
+
+    if getattr(args, "make_heatmaps", False):
+        generate_panel_heatmaps(args, root, mars_dir, eclip_dir, disc_output, r_mars_dir)
+
+    total_time = time.time() - pipeline_t0
+    print(f"\n  --> Discovery mode complete")
+    print(f"      Total time: {fmt_time(total_time)}")
+    print(f"      Results:    {disc_output}")
+    print(f"      Optimal params: {opt_csv_path}")
+    print()
+
+
+# ── Bayesian discovery mode ────────────────────────────────────────────────
+
+def run_discovery_mode_bayes(args, root, mars_dir, eclip_dir):
+    """Discovery mode with Bayesian optimisation instead of grid search.
+
+    For each RBP, uses a GP surrogate with Expected Improvement to search
+    the continuous (hw, ew) space.  The objective evaluation reuses the
+    identical pipeline as the grid search (rnamotifs -> MARS format ->
+    rnamotifs_mars_score -> AUROC), so results are directly comparable.
+    """
+    import logging
+    from rnamotifs_mars.optim.bayes_opt import optimise_rbp
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="    [BO] %(message)s",
+    )
+
+    if not args.mars_exons_dir:
+        sys.exit("Error: --mars-exons-dir is required for discovery mode")
+
+    mars_exons_dir = os.path.abspath(args.mars_exons_dir)
+    if not os.path.isdir(mars_exons_dir):
+        sys.exit(f"Error: mars-exons-dir not found: {mars_exons_dir}")
+
+    rnamotifs_bin = os.path.join(root, "rnamotifs")
+    if not os.path.isfile(rnamotifs_bin):
+        sys.exit(f"Error: rnamotifs binary not found at {rnamotifs_bin}")
+
+    mars_score_bin = os.path.join(root, "build", "rnamotifs_mars_score")
+    if not os.path.isfile(mars_score_bin):
+        sys.exit(f"Error: rnamotifs_mars_score binary not found. "
+                 f"Run: cmake --build build")
+
+    r_mars_dir = os.path.join(root, "src", "R", "mars")
+    results_parent = os.path.join(root, "results")
+    rbps = get_rbps_for_cell_line(args.cell_line)
+
+    ii_suffix = f"_ii{args.in_intron}" if args.in_intron != 300 else ""
+    disc_subdir = f"{args.cell_line}_{args.genome}{ii_suffix}{args.disc_suffix}_bayes"
+    disc_output = os.path.join(root, "results", "MaRs_discovery", disc_subdir, "")
+    os.makedirs(disc_output, exist_ok=True)
+
+    # Manifest for crash-safe resumption
+    manifest_path = os.path.join(disc_output, "discovery_manifest.json")
+    if os.path.isfile(manifest_path):
+        with open(manifest_path) as f:
+            disc_manifest = json.load(f)
+    else:
+        disc_manifest = {
+            "rbps": {},
+            "cell_line": args.cell_line,
+            "optim": "bayes",
+            "bo_seed": args.bo_seed,
+            "bo_n_init": args.bo_n_init,
+            "bo_n_iter": args.bo_n_iter,
+            "bo_hw_range": args.bo_hw_range,
+            "bo_ew_range": args.bo_ew_range,
+        }
+
+    def save_disc_manifest():
+        fd, tmp = tempfile.mkstemp(dir=disc_output, suffix=".json.tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(disc_manifest, f, indent=2)
+                f.write("\n")
+            os.replace(tmp, manifest_path)
+        except BaseException:
+            try: os.unlink(tmp)
+            except OSError: pass
+            raise
+
+    print(BANNER)
+    print(f"""
+  DISCOVERY MODE (Bayesian Optimisation)
+  {'=' * 60}
+  Cell line        : {args.cell_line}
+  Genome           : {args.genome}
+  Mars exons dir   : {mars_exons_dir}
+  eCLIP directory  : {eclip_dir}
+  MaRs data dir    : {mars_dir}
+  Cores            : {args.cores}
+  Bootstraps       : {args.bootstraps}
+  In-exon          : {args.in_exon}
+  In-intron        : {args.in_intron}
+  n range (=2*hw)  : {[2 * h for h in args.bo_hw_range]}  (hw: {args.bo_hw_range})
+  e range          : {args.bo_ew_range}
+  BO budget        : {args.bo_n_init} init + {args.bo_n_iter} iter = {args.bo_n_init + args.bo_n_iter} evals
+  BO seed          : {args.bo_seed}
+  Training RBPs    : {len(rbps)}
+  Output           : {disc_output}
+  {'=' * 60}
+""")
+
+    # Find which RBPs have exon files
+    available_rbps = []
+    for rbp in rbps:
+        exon_file = os.path.join(mars_exons_dir, f"{rbp}_input_rnamotifs.txt")
+        if os.path.isfile(exon_file):
+            available_rbps.append(rbp)
+        else:
+            print(f"  WARNING: No exon file for {rbp}, skipping")
+
+    if not available_rbps:
+        sys.exit("Error: no RBP exon files found in " + mars_exons_dir)
+
+    print(f"\n  {len(available_rbps)} RBPs with exon data: "
+          f"{', '.join(available_rbps)}")
+
+    pipeline_t0 = time.time()
+    optimal_results = []
+
+    for rbp_idx, rbp in enumerate(available_rbps, 1):
+        print(f"\n{'=' * 60}")
+        print(f"  [{rbp_idx}/{len(available_rbps)}] {rbp} (Bayesian opt)")
+        print(f"{'=' * 60}")
+
+        # Check if already done
+        rbp_info = disc_manifest.get("rbps", {}).get(rbp, {})
+        if rbp_info.get("status") == "complete":
+            print(f"  Already complete: hw={rbp_info['best_hw']} "
+                  f"ew={rbp_info['best_ew']} "
+                  f"AUROC={rbp_info['best_score']:.4f}")
+            optimal_results.append({
+                "true_rbp": rbp,
+                "hw": rbp_info["best_hw"],
+                "ew": rbp_info["best_ew"],
+                "in_intron": args.in_intron,
+                "params": f"hw_{rbp_info['best_hw']}_ew_{rbp_info['best_ew']}",
+                "score": rbp_info["best_score"],
+            })
+            continue
+
+        exon_file = os.path.join(mars_exons_dir, f"{rbp}_input_rnamotifs.txt")
+        rbp_sweep_dir = os.path.join(disc_output, rbp, "sweep", "")
+        rbp_scores_dir = os.path.join(disc_output, rbp, "scores", "")
+        os.makedirs(rbp_sweep_dir, exist_ok=True)
+        os.makedirs(rbp_scores_dir, exist_ok=True)
+
+        # Build the objective closure — mirrors lines 689-853 of grid search
+        def _make_eval_fn(rbp_name, exon_f, sweep_dir, scores_dir):
+            """Create an objective function for one RBP."""
+            def eval_fn(hw, ew):
+                combo_key = f"hw_{hw}_ew_{ew}"
+                kmer_suffix = f"_k{args.kmer_size}" if hasattr(args, 'kmer_size') and args.kmer_size != 4 else ""
+                run_name = f"{rbp_name}_{combo_key}{kmer_suffix}{args.disc_suffix}"
+                mars_compat_dir = os.path.join(sweep_dir, run_name)
+
+                # Phase 1a: Run rnamotifs
+                rnamotifs_result_dir = find_rnamotifs_result_dir(
+                    results_parent, run_name)
+                needs_run = not check_rnamotifs_complete(
+                    rnamotifs_result_dir, args.bootstraps)
+
+                if needs_run:
+                    kmer_flag = f" -k {args.kmer_size}" if hasattr(args, 'kmer_size') and args.kmer_size != 4 else ""
+                    cmd = (
+                        f"{rnamotifs_bin} {exon_f} "
+                        f"-n {run_name} "
+                        f"-g {args.genome} "
+                        f"--n {2 * hw} "
+                        f"-m {args.min_height} "
+                        f"-p {args.pth} "
+                        f"-e {ew} "
+                        f"--in-exon {args.in_exon} "
+                        f"--in-intron {args.in_intron} "
+                        f"-b {args.bootstraps} "
+                        f"-c {args.cores} "
+                        f"--p-fisher {args.p_fisher} "
+                        f"--p-empirical {args.p_empirical}"
+                        f"{' --event-type ' + args.event_type if hasattr(args, 'event_type') and args.event_type != 'SE' else ''}"
+                        f"{kmer_flag}"
+                    )
+                    try:
+                        run(cmd)
+                    except subprocess.CalledProcessError:
+                        return 0.0
+
+                    rnamotifs_result_dir = find_rnamotifs_result_dir(
+                        results_parent, run_name)
+
+                if rnamotifs_result_dir is None:
+                    return 0.0
+
+                # Phase 1b: Convert to MARS format
+                if not check_mars_conversion_complete(
+                        mars_compat_dir, args.bootstraps):
+                    ok = convert_to_mars_format(
+                        rnamotifs_result_dir, mars_compat_dir,
+                        args.bootstraps, args.p_fisher, args.p_empirical,
+                        args.in_exon, args.in_intron, r_mars_dir)
+                    if not ok:
+                        return 0.0
+
+                n_tet = _count_enriched_tetramers(mars_compat_dir)
+                if n_tet == 0:
+                    return 0.0
+
+                # Phase 2: Score ALL RBPs for this combo
+                tmp_params_dir = os.path.join(scores_dir, "tmp_params")
+                os.makedirs(os.path.join(tmp_params_dir, "Tables"),
+                            exist_ok=True)
+                tmp_opt_csv = os.path.join(
+                    tmp_params_dir, "Tables",
+                    "RNAmotifs_optimal_parameters.csv")
+                with open(tmp_opt_csv, "w") as tf:
+                    tf.write('"params","true_rbp","hw","ew"\n')
+                    for all_rbp in available_rbps:
+                        tf.write(f'"{combo_key}","{all_rbp}","{hw}","{ew}"\n')
+
+                auc_dst_dir = os.path.join(tmp_params_dir, "Rdata")
+                os.makedirs(auc_dst_dir, exist_ok=True)
+                auc_src = os.path.join(mars_dir, "Rdata",
+                                       f"{args.cell_line}_AUC.tsv")
+                auc_dst = os.path.join(auc_dst_dir,
+                                       f"{args.cell_line}_AUC.tsv")
+                if os.path.isfile(auc_src):
+                    shutil.copy2(auc_src, auc_dst)
+                elif not os.path.isfile(auc_dst):
+                    with open(auc_dst, "w") as af:
+                        af.write("rbp\tauc\n")
+                        for all_rbp in available_rbps:
+                            af.write(f"{all_rbp}_enh\t1.0\n")
+                            af.write(f"{all_rbp}_sil\t1.0\n")
+
+                combo_score_dir = os.path.join(scores_dir, combo_key, "")
+                os.makedirs(combo_score_dir, exist_ok=True)
+
+                cmd = (
+                    f"{mars_score_bin} "
+                    f"-i {exon_f} "
+                    f"-n {rbp_name} "
+                    f"-d {sweep_dir} "
+                    f"-r {tmp_params_dir} "
+                    f"-c {args.cell_line} "
+                    f"-p {args.cores} "
+                    f"-e {eclip_dir} "
+                    f"-o {combo_score_dir} "
+                    f"--in-exon {args.in_exon} "
+                    f"--in-intron {args.in_intron} "
+                    f"-b {args.bootstraps} "
+                    f"--score-mode {args.score_mode}"
+                )
+                try:
+                    run(cmd)
+                except subprocess.CalledProcessError:
+                    return 0.0
+
+                # Compute AUROC — identical to grid-search logic
+                score = 0.0
+                for direction in ["enh", "sil"]:
+                    as_file = os.path.join(
+                        combo_score_dir,
+                        f"association_scores_{direction}_{rbp_name}.tsv")
+                    if not os.path.isfile(as_file):
+                        continue
+                    true_scores = []
+                    other_scores = []
+                    with open(as_file) as af:
+                        header = next(af)
+                        for aline in af:
+                            parts = aline.strip().split("\t")
+                            if len(parts) < 2:
+                                continue
+                            rbp_n = parts[0]
+                            vals = [float(v) for v in parts[1:] if v]
+                            if rbp_n == rbp_name:
+                                true_scores.extend(vals)
+                            else:
+                                other_scores.extend(vals)
+                    if true_scores and other_scores:
+                        n_pos = len(true_scores)
+                        n_neg = len(other_scores)
+                        wins = 0
+                        ties = 0
+                        for ts in true_scores:
+                            for os_val in other_scores:
+                                if ts > os_val:
+                                    wins += 1
+                                elif ts == os_val:
+                                    ties += 1
+                        auroc = (wins + 0.5 * ties) / (n_pos * n_neg)
+                        if auroc > score:
+                            score = auroc
+                return score
+            return eval_fn
+
+        eval_fn = _make_eval_fn(rbp, exon_file, rbp_sweep_dir, rbp_scores_dir)
+
+        rbp_t0 = time.time()
+        result = optimise_rbp(
+            target=rbp,
+            eval_fn=eval_fn,
+            search_space={
+                "hw": tuple(args.bo_hw_range),
+                "ew": tuple(args.bo_ew_range),
+            },
+            budget=(args.bo_n_init, args.bo_n_iter),
+            seed=args.bo_seed + rbp_idx,  # per-RBP seed for reproducibility
+        )
+        rbp_time = time.time() - rbp_t0
+
+        best_hw = result["n_star"]
+        best_ew = result["e_star"]
+        best_score = result["auroc_star"]
+
+        print(f"\n  {rbp}: best=({best_hw},{best_ew}) AUROC={best_score:.4f} "
+              f"[{len(result['trace'])} evals, {fmt_time(rbp_time)}]")
+
+        # Log to manifest
+        disc_manifest.setdefault("rbps", {})[rbp] = {
+            "status": "complete",
+            "best_hw": best_hw,
+            "best_ew": best_ew,
+            "best_score": best_score,
+            "n_evals": len(result["trace"]),
+            "trace": [(int(h), int(e), float(a)) for h, e, a in result["trace"]],
+            "wall_time_s": round(rbp_time, 1),
+            "timestamp": _now_iso(),
+        }
+        save_disc_manifest()
+
+        optimal_results.append({
+            "true_rbp": rbp,
+            "hw": best_hw,
+            "ew": best_ew,
+            "in_intron": args.in_intron,
+            "params": f"hw_{best_hw}_ew_{best_ew}",
+            "score": best_score,
+        })
+
+        # Clean up non-best intermediate results
+        for hw_i, ew_i, _ in result["trace"]:
+            if hw_i == best_hw and ew_i == best_ew:
+                continue
+            combo_key = f"hw_{hw_i}_ew_{ew_i}"
+            combo_score_dir = os.path.join(rbp_scores_dir, combo_key)
+            if os.path.isdir(combo_score_dir):
+                shutil.rmtree(combo_score_dir)
+
+    # ── Write optimal parameters CSV ─────────────────────────────────────
+    tables_dir = os.path.join(mars_dir, "Tables")
+    os.makedirs(tables_dir, exist_ok=True)
+    opt_csv_path = os.path.join(tables_dir, "RNAmotifs_optimal_parameters.csv")
+
+    existing = {}
+    if os.path.isfile(opt_csv_path):
+        with open(opt_csv_path) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                row.setdefault("in_intron", "300")
+                row.setdefault("score", "0")
+                existing[row["true_rbp"]] = row
+
+    for res in optimal_results:
+        rbp_name = res["true_rbp"]
+        prev = existing.get(rbp_name)
+        if prev is None or float(res.get("score", 0)) > float(prev.get("score", 0)):
+            existing[rbp_name] = res
+
+    with open(opt_csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=["params", "true_rbp", "hw", "ew", "in_intron"],
+            quoting=csv.QUOTE_ALL)
+        writer.writeheader()
+        for rbp_name in sorted(existing):
+            row = existing[rbp_name]
+            ii = row.get("in_intron", "300")
+            writer.writerow({
+                "params": row.get("params", f"hw_{row['hw']}_ew_{row['ew']}"),
+                "true_rbp": row["true_rbp"],
+                "hw": row["hw"],
+                "ew": row["ew"],
+                "in_intron": ii,
+            })
+    print(f"\n  Wrote optimal parameters: {opt_csv_path}")
+
+    # ── Compute PEAK binding profiles ────────────────────────────────────
+    step("Computing PEAK binding profiles")
+    rdata_dir = os.path.join(mars_dir, "Rdata", "")
+    os.makedirs(rdata_dir, exist_ok=True)
+
+    cmd = (
+        f"{mars_score_bin} --compute-peak "
+        f"--mars-exons-dir {mars_exons_dir} "
+        f"-e {eclip_dir} "
+        f"-o {rdata_dir} "
+        f"-c {args.cell_line} "
+        f"-p {args.cores} "
+        f"--in-exon {args.in_exon} "
+        f"--in-intron {args.in_intron}"
+    )
+    try:
+        run(cmd)
+        print("  PEAK profiles computed")
+    except subprocess.CalledProcessError as e:
+        print(f"  WARNING: PEAK computation failed (exit {e.returncode})")
+
+    # ── DO NOT overwrite the SRR reference (AUC.tsv) — see grid path above ─
+    # Same rationale: AUC.tsv is the SRR weight (SCORE1) read by mars_score and
+    # must not be clobbered with association scores (would zero out the next run).
+    auc_path = os.path.join(rdata_dir, f"{args.cell_line}_AUC.tsv")
+    print(f"  Preserving SRR reference (not overwriting): {auc_path}")
+
+    total_time = time.time() - pipeline_t0
+    print(f"\n  --> Discovery mode (Bayesian) complete")
+    print(f"      Total time: {fmt_time(total_time)}")
+    print(f"      Results:    {disc_output}")
+    print(f"      Optimal params: {opt_csv_path}")
+    print()
+
+
+# ── Final heatmaps (generate_heatmap.R) for the trained panel ────────────────
+
+def generate_panel_heatmaps(args, root, mars_dir, eclip_dir, disc_output, r_mars_dir):
+    """Produce the native generate_heatmap.R final heatmaps — the Figure-4A
+    composite (association-score heatmap + per-RBP RNA splicing maps) — for every
+    trained RBP, using the GRID optima from the discovery manifest.
+
+    Reuses the existing grid sweeps (no motif re-search): the discovery run
+    already swept every RBP at every grid combo, so we stage those sweeps under
+    the names generate_heatmap.R expects, re-score them (fast, Phase 2), then run
+    generate_heatmap.R per RBP. Outputs land in <disc_output>/heatmaps/.
+    """
+    import json
+    step("HEATMAPS: generate_heatmap.R for the trained panel (grid optima)")
+    manifest_path = os.path.join(disc_output, "discovery_manifest.json")
+    if not os.path.isfile(manifest_path):
+        print(f"  [heatmaps] no manifest at {manifest_path}; skipping")
+        return
+    with open(manifest_path) as fh:
+        man = json.load(fh)
+    rbp_best = {r: (int(info["best_hw"]), int(info["best_ew"]))
+                for r, info in man.get("rbps", {}).items()
+                if info.get("status") == "complete" and info.get("best_hw") is not None}
+    if not rbp_best:
+        print("  [heatmaps] no completed RBPs in manifest; skipping")
+        return
+
+    kmer_suffix = f"_k{args.kmer_size}" if getattr(args, "kmer_size", 4) != 4 else ""
+
+    # Grid reference dir: Rdata symlinked from the wb reference + a GRID OPT table
+    # built straight from the discovery manifest (the grid is the discovery output).
+    gref = os.path.join(disc_output, "_heatmap_ref")
+    os.makedirs(os.path.join(gref, "Tables"), exist_ok=True)
+    rdata_link = os.path.join(gref, "Rdata")
+    if not os.path.lexists(rdata_link):
+        os.symlink(os.path.abspath(os.path.join(mars_dir, "Rdata")), rdata_link)
+    opt_csv = os.path.join(gref, "Tables", "RNAmotifs_optimal_parameters.csv")
+    with open(opt_csv, "w") as fh:
+        fh.write('"params","true_rbp","hw","ew","in_intron"\n')
+        for r, (hw, ew) in sorted(rbp_best.items()):
+            fh.write(f'"hw_{hw}_ew_{ew}","{r}","{hw}","{ew}","{args.in_intron}"\n')
+
+    needed = sorted(set(rbp_best.values()))
+    hm_root = os.path.join(disc_output, "heatmaps")
+    os.makedirs(hm_root, exist_ok=True)
+    mars_score_bin = os.path.join(root, "build", "rnamotifs_mars_score")
+    heatmap_script = os.path.join(r_mars_dir, "generate_heatmap.R")
+    made, failed = [], []
+
+    for rbp in sorted(rbp_best):
+        exon = os.path.join(args.mars_exons_dir, f"{rbp}_input_rnamotifs.txt")
+        if not os.path.isfile(exon):
+            print(f"  [heatmaps] {rbp}: no exon file, skip"); continue
+        disc_sweep = os.path.join(disc_output, rbp, "sweep")
+        work   = os.path.join(hm_root, "_work", rbp)
+        sweep  = os.path.join(work, "sweep")
+        scores = os.path.join(work, "scores")
+        os.makedirs(sweep, exist_ok=True)
+        os.makedirs(scores, exist_ok=True)
+
+        staged = 0
+        for hw, ew in needed:
+            src = os.path.join(disc_sweep, f"{rbp}_hw_{hw}_ew_{ew}{kmer_suffix}{args.disc_suffix}")
+            if not os.path.isdir(src):
+                continue
+            dst = os.path.join(sweep, f"{rbp}_hw_{hw}_ew_{ew}")
+            if not os.path.lexists(dst):
+                os.symlink(os.path.abspath(src), dst)
+            staged += 1
+        if staged == 0:
+            print(f"  [heatmaps] {rbp}: no matching sweeps, skip"); continue
+
+        try:
+            run(f"{mars_score_bin} -i {exon} -n {rbp} -d {sweep}/ -r {gref} "
+                f"-c {args.cell_line} -p {args.cores} -e {eclip_dir} -o {scores}/ "
+                f"--in-exon {args.in_exon} --in-intron {args.in_intron} "
+                f"-b {args.bootstraps} --summary")
+            run(f"Rscript {heatmap_script} -i {exon} -n {rbp} -d {sweep}/ -r {gref}/ "
+                f"-c {args.cell_line} -e NA -p {args.cores} -o {scores}/ -s {r_mars_dir} "
+                f"--in_exon {args.in_exon} --in_intron {args.in_intron} "
+                f"--sort_by {args.sort_by} "
+                f"--top_mrms {getattr(args, 'heatmap_top_mrms', 0)} "
+                f"--top_rbps {getattr(args, 'heatmap_top_rbps', 0)}", env=r_env())
+        except subprocess.CalledProcessError as e:
+            print(f"  [heatmaps] {rbp}: FAILED (exit {e.returncode})")
+            failed.append(rbp); continue
+
+        for d in ("enh", "sil"):
+            pdf = os.path.join(scores, f"{args.cell_line}_{rbp}_{d}.pdf")
+            if os.path.isfile(pdf):
+                dst = os.path.join(hm_root, f"{args.cell_line}_{rbp}_{d}.pdf")
+                shutil.copy2(pdf, dst)
+                made.append(os.path.basename(dst))
+        print(f"  [heatmaps] {rbp}: done ({staged} combos)")
+
+    print(f"\n  [heatmaps] wrote {len(made)} heatmap PDF(s) -> {hm_root}")
+    if failed:
+        print(f"  [heatmaps] failed RBPs: {', '.join(failed)}")
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="rnamotifs-mars",
+        description=textwrap.dedent(__doc__),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("input_file",
+        help="Splicing-change file (RNAmotifs format); unused in discovery mode")
+    parser.add_argument("-n", "--name", required=True,
+        help="Analysis name")
+    parser.add_argument("--mode", choices=["application", "discovery"],
+        default="application",
+        help="Pipeline mode (default: application)")
+    parser.add_argument("-g", "--genome", default="hg19",
+        choices=["hg19", "hg38", "mm9", "mm10", "mm39"],
+        help="Reference genome (default: hg19)")
+    parser.add_argument("--cell-line", required=True,
+        choices=["HepG2", "K562"],
+        help="Cell line for eCLIP comparison (HepG2 or K562)")
+    parser.add_argument("--eclip-dir", required=True,
+        help="Path to eCLIP peaks directory")
+    parser.add_argument("--event-type", default="SE",
+        choices=["SE", "RI"],
+        help="Splicing event type: SE (skipped exon) or RI (intron retention)")
+    parser.add_argument("-c", "--cores", type=int, default=1,
+        help="CPU cores (default: 1)")
+    parser.add_argument("--deseq-file", default=None,
+        help="Optional DESeq2 differential expression file (.tsv or .rds)")
+    parser.add_argument("--mars-dir", required=True,
+        help="Path to RNAmars data directory (containing Tables/, Rdata/)")
+
+    # RNAmotifs parameters that can be overridden
+    parser.add_argument("--in-exon", type=int, default=30,
+        help="Region extent into exons in bp (default: 30)")
+    parser.add_argument("--in-intron", type=int, nargs="+", default=[300],
+        help="Region extent into introns in bp; multiple values for grid search (default: 300)")
+    parser.add_argument("-b", "--bootstraps", type=int, default=10000,
+        help="Bootstrap iterations (default: 10000)")
+    parser.add_argument("--p-fisher", type=float, default=0.1,
+        help="Fisher p-value threshold (default: 0.1)")
+    parser.add_argument("--p-empirical", type=float, default=0.00005,
+        help="Empirical p-value threshold (default: 0.00005)")
+    parser.add_argument("--score-mode", choices=["full", "cs-only"], default="full",
+        help="Association score: 'full' = CS x SRR (default); "
+             "'cs-only' = CS alone (disable the SRR robustness weight)")
+    parser.add_argument("--min-height", type=int, default=4,
+        help="Minimum cluster height (default: 4)")
+    parser.add_argument("--pth", type=float, default=0.5,
+        help="Percentage threshold (default: 0.5)")
+    parser.add_argument("-k", "--kmer-size", type=int, default=4,
+        help="K-mer size for motif enumeration (default: 4)")
+
+    # Optional: skip phases
+    parser.add_argument("--skip-rnamotifs", action="store_true",
+        help="Skip Phase 1 (RNAmotifs sweep), assume results already exist")
+    parser.add_argument("--skip-scores", action="store_true",
+        help="Skip Phase 2 (association score computation)")
+    parser.add_argument("--sort-by", choices=["mean", "max"], default="mean",
+        help="Sort RBPs in the association heatmap by 'mean' (default) or 'max' "
+             "association score across MRMs")
+
+    # Discovery mode arguments
+    parser.add_argument("--mars-exons-dir",
+        help="Directory with RBP knockdown exon files (discovery mode)")
+    parser.add_argument("--param-grid-n", type=int, nargs="+",
+        dest="param_grid_n", default=[10, 30, 50, 70],
+        help="Clustering-window grid n for discovery, paper notation n = 2*hw "
+             "(default: 10 30 50 70). Each n must be even.")
+    parser.add_argument("--param-grid-e", type=int, nargs="+",
+        dest="param_grid_e", default=[30, 50, 100, 200, 300],
+        help="Enrichment-window grid e for discovery (default: 30 50 100 200 300)")
+    # Back-compat half-window aliases (n = 2*hw); hidden from --help.
+    parser.add_argument("--param-grid-hw", type=int, nargs="+",
+        dest="param_grid_hw", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--param-grid-ew", type=int, nargs="+",
+        dest="param_grid_ew", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--optim", choices=["grid", "bayes"], default="grid",
+        help="Parameter optimisation strategy for discovery mode. "
+             "'grid' (default): exhaustive sweep over --param-grid-n/e. "
+             "'bayes': Bayesian optimisation with GP surrogate and EI "
+             "acquisition over a continuous search space (recommended).")
+    parser.add_argument("--bo-seed", type=int, default=42,
+        help="Random seed for Bayesian optimisation (default: 42)")
+    parser.add_argument("--bo-n-init", type=int, default=8,
+        help="Number of initial LHS design points for BO (default: 8)")
+    parser.add_argument("--bo-n-iter", type=int, default=30,
+        help="Number of BO iterations after initial design (default: 30)")
+    parser.add_argument("--disc-suffix", type=str, default="",
+        help="Extra suffix for discovery output directory (e.g. '_paper')")
+    parser.add_argument("--make-heatmaps", action="store_true",
+        help="After (grid) discovery, run generate_heatmap.R for every trained RBP "
+             "to produce the final Figure-4A-style heatmaps (association-score heatmap "
+             "+ per-RBP RNA splicing maps), using the grid optima from the discovery "
+             "manifest. Reuses the existing grid sweeps (no motif re-search); outputs "
+             "to <discovery_results>/heatmaps/. Resumable: re-run the same discovery "
+             "command with this flag on completed results to generate the heatmaps.")
+    parser.add_argument("--heatmap-top-mrms", type=int, default=0, metavar="N",
+        help="In the Phase-3 heatmaps, show only the top-N enriched MRMs (columns). "
+             "0 = all (default). E.g. 5 reproduces the Figure-4A top-5 crop.")
+    parser.add_argument("--heatmap-top-rbps", type=int, default=0, metavar="N",
+        help="In the Phase-3 heatmaps, show only the top-N RBPs (rows). 0 = all (default).")
+    parser.add_argument("--bo-n-range", type=int, nargs=2, dest="bo_n_range",
+        default=[10, 70], metavar=("LO", "HI"),
+        help="Clustering-window (n = 2*hw) search range for BO (default: 10 70). "
+             "Each bound must be even.")
+    parser.add_argument("--bo-e-range", type=int, nargs=2, dest="bo_e_range",
+        default=[30, 300], metavar=("LO", "HI"),
+        help="Enrichment-window (e) search range for BO (default: 30 300)")
+    # Back-compat half-window aliases (n = 2*hw); hidden from --help.
+    parser.add_argument("--bo-hw-range", type=int, nargs=2, dest="bo_hw_range",
+        default=None, metavar=("LO", "HI"), help=argparse.SUPPRESS)
+    parser.add_argument("--bo-ew-range", type=int, nargs=2, dest="bo_ew_range",
+        default=None, metavar=("LO", "HI"), help=argparse.SUPPRESS)
+
+    args = parser.parse_args()
+
+    # --- Reconcile paper-notation (n/e) grids+ranges with back-compat hw/ew --
+    # Internal code keys everything on hw (n = 2*hw); convert once here so the
+    # discovery/bayes functions and all on-disk results are unchanged.
+    def _even_or_die(label, vals):
+        for v in vals:
+            if v % 2 != 0:
+                parser.error(f"{label} values must be even (n = 2*hw); got {v}")
+    if args.param_grid_hw is None:
+        _even_or_die("--param-grid-n", args.param_grid_n)
+        args.param_grid_hw = [v // 2 for v in args.param_grid_n]
+    if args.param_grid_ew is None:
+        args.param_grid_ew = list(args.param_grid_e)
+    if args.bo_hw_range is None:
+        _even_or_die("--bo-n-range", args.bo_n_range)
+        args.bo_hw_range = [v // 2 for v in args.bo_n_range]
+    if args.bo_ew_range is None:
+        args.bo_ew_range = list(args.bo_e_range)
+
+    # Resource limits
+    MAX_CORES = 10
+    MAX_RAM_GB = 50
+    if args.cores > MAX_CORES:
+        print(f"  WARNING: Capping cores from {args.cores} to {MAX_CORES}")
+        args.cores = MAX_CORES
+
+    # Store in_intron list and resolve first value for shared args
+    in_intron_values = args.in_intron if isinstance(args.in_intron, list) else [args.in_intron]
+
+    # If multiple in_intron values, run pipeline for each sequentially
+    if len(in_intron_values) > 1:
+        t0 = time.time()
+        for ii_val in in_intron_values:
+            print(f"\n{'=' * 60}")
+            print(f"  Grid search: in_intron = {ii_val}")
+            print(f"{'=' * 60}")
+            # Build sub-command with single in_intron value
+            sub_argv = []
+            skip_count = 0
+            for k, arg in enumerate(sys.argv[1:]):
+                if skip_count > 0:
+                    skip_count -= 1
+                    continue
+                if arg == '--in-intron':
+                    sub_argv.append('--in-intron')
+                    sub_argv.append(str(ii_val))
+                    # Skip original values
+                    j = k + 2  # 1-based index in sys.argv[1:]
+                    while j < len(sys.argv[1:]) and not sys.argv[1:][j].startswith('-'):
+                        skip_count += 1
+                        j += 1
+                    continue
+                sub_argv.append(arg)
+            subprocess.check_call([sys.executable, sys.argv[0]] + sub_argv)
+        print(f"\n  Grid search complete ({fmt_time(time.time() - t0)})")
+        print(f"  in_intron values tested: {in_intron_values}")
+        return
+
+    args.in_intron = in_intron_values[0]
+
+    root = find_root()
+    mars_dir = os.path.abspath(args.mars_dir)
+    eclip_dir = os.path.abspath(args.eclip_dir)
+
+    if not os.path.isdir(mars_dir):
+        sys.exit(f"Error: mars-dir not found: {mars_dir}")
+    if not os.path.isdir(eclip_dir):
+        sys.exit(f"Error: eclip-dir not found: {eclip_dir}")
+
+    # Resolve cell-line/genome subdirectory if eclip_dir is the parent
+    eclip_sub = os.path.join(eclip_dir, args.cell_line, args.genome)
+    if os.path.isdir(eclip_sub):
+        eclip_dir = eclip_sub
+
+    # Ensure eclip_dir ends with /
+    if not eclip_dir.endswith("/"):
+        eclip_dir += "/"
+
+    # ── Discovery mode dispatch ──────────────────────────────────────────
+    if args.mode == "discovery":
+        if args.optim == "bayes":
+            run_discovery_mode_bayes(args, root, mars_dir, eclip_dir)
+        else:
+            run_discovery_mode(args, root, mars_dir, eclip_dir)
+        return
+
+    # ── Application mode ─────────────────────────────────────────────────
+    input_file = os.path.abspath(args.input_file)
+
+    if not os.path.isfile(input_file):
+        sys.exit(f"Error: input file not found: {input_file}")
+
+    # Paths
+    rnamotifs_bin = os.path.join(root, "rnamotifs")
+    if not os.path.isfile(rnamotifs_bin):
+        sys.exit(f"Error: rnamotifs binary not found at {rnamotifs_bin}")
+
+    r_mars_dir = os.path.join(root, "src", "R", "mars")
+    results_parent = os.path.join(root, "results")
+    # Application output: results/MaRs_<name>/<YYYYMMDD>_<cell_line>_<genome>/
+    ii_suffix = f"_ii{args.in_intron}" if args.in_intron != 300 else ""
+    app_date = datetime.now().strftime("%Y%m%d")
+    app_subdir = f"{app_date}_{args.cell_line}_{args.genome}{ii_suffix}"
+    mars_output = os.path.join(root, "results",
+                               f"MaRs_{args.name}", app_subdir, "")
+    sweep_dir = os.path.join(mars_output, "sweep")
+    scores_dir = os.path.join(mars_output, "scores")
+    os.makedirs(sweep_dir, exist_ok=True)
+    os.makedirs(scores_dir, exist_ok=True)
+
+    # Determine RBPs and parameter combinations
+    rbps = get_rbps_for_cell_line(args.cell_line)
+    opt_params = read_optimal_parameters(mars_dir)
+    param_combos = get_needed_param_combos(opt_params, rbps)
+
+    # ── Load manifest and reconcile with filesystem state ────────────────────
+    manifest = load_manifest(mars_output)
+    manifest["name"] = args.name
+    manifest["cell_line"] = args.cell_line
+    manifest["genome"] = args.genome
+
+    # Reconcile Phase 1: scan filesystem to adopt existing results that are
+    # not yet tracked, and detect entries marked complete whose files have
+    # gone missing.
+    for hw, ew in param_combos:
+        key = _combo_key(hw, ew)
+        mars_run_name = f"{args.name}_hw_{hw}_ew_{ew}"
+        mars_compat_dir = os.path.join(sweep_dir, mars_run_name)
+
+        entry = manifest.get("phase1", {}).get(key, {})
+        prev_status = entry.get("status", "pending")
+
+        # Check whether the MARS-format conversion is fully done
+        if check_mars_conversion_complete(mars_compat_dir, args.bootstraps):
+            n_tet = _count_enriched_tetramers(mars_compat_dir)
+            manifest.setdefault("phase1", {})[key] = {
+                "status": "complete",
+                "result_dir": mars_compat_dir,
+                "enriched_tetramers": n_tet,
+                "timestamp": entry.get("timestamp", _now_iso()),
+            }
+        elif prev_status == "complete":
+            # Was marked complete but files are missing -- reset to pending
+            manifest.setdefault("phase1", {})[key] = {"status": "pending"}
+        elif prev_status not in ("failed", "pending"):
+            manifest.setdefault("phase1", {})[key] = {"status": "pending"}
+        else:
+            manifest.setdefault("phase1", {})[key] = entry if entry else {
+                "status": "pending"}
+
+    # Reconcile Phase 2
+    if check_phase2_complete(mars_output, args.name):
+        if manifest.get("phase2", {}).get("status") != "complete":
+            manifest["phase2"] = {
+                "status": "complete",
+                "timestamp": _now_iso(),
+            }
+    elif manifest.get("phase2", {}).get("status") == "complete":
+        manifest["phase2"] = {"status": "pending"}
+
+    # Reconcile Phase 3
+    if check_phase3_complete(mars_output, args.name, args.cell_line):
+        if manifest.get("phase3", {}).get("status") != "complete":
+            manifest["phase3"] = {
+                "status": "complete",
+                "timestamp": _now_iso(),
+            }
+    elif manifest.get("phase3", {}).get("status") == "complete":
+        manifest["phase3"] = {"status": "pending"}
+
+    save_manifest(mars_output, manifest)
+
+    # ── Print configuration and status ───────────────────────────────────────
+    print(BANNER)
+    print(f"""
+  Configuration
+  {'=' * 60}
+  Input file       : {input_file}
+  Analysis name    : {args.name}
+  Genome           : {args.genome}
+  Cell line        : {args.cell_line}
+  eCLIP directory  : {eclip_dir}
+  MaRs data dir    : {mars_dir}
+  Cores            : {args.cores}
+  DESeq2 file      : {args.deseq_file or '(not provided)'}
+  In-exon          : {args.in_exon}
+  In-intron        : {args.in_intron}
+  Bootstraps       : {args.bootstraps}
+  {'=' * 60}
+  Training RBPs    : {len(rbps)} ({args.cell_line})
+  Parameter combos : {len(param_combos)}
+  {'=' * 60}
+  MaRs output      : {mars_output}
+  Sweep results    : {sweep_dir}
+  Manifest         : {os.path.join(mars_output, 'mars_manifest.json')}
+  {'=' * 60}
+""")
+
+    # Print cached-state summary
+    print_phase1_status(manifest, param_combos)
+
+    p2_status = manifest.get("phase2", {}).get("status", "pending")
+    p3_status = manifest.get("phase3", {}).get("status", "pending")
+    print(f"  Phase 2 (scores) : {p2_status}")
+    print(f"  Phase 3 (heatmap): {p3_status}")
+    print()
+
+    # Check R dependencies
+    step("Checking R dependencies")
+    check_r_deps()
+
+    pipeline_t0 = time.time()
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # PHASE 1: Multi-parameter RNAmotifs sweep + format conversion
+    # ═════════════════════════════════════════════════════════════════════════
+
+    if not args.skip_rnamotifs:
+        step("PHASE 1: Multi-parameter RNAmotifs sweep")
+        print(f"  Running {len(param_combos)} parameter combinations...")
+
+        for i, (hw, ew) in enumerate(param_combos, 1):
+            key = _combo_key(hw, ew)
+            mars_run_name = f"{args.name}_hw_{hw}_ew_{ew}"
+            mars_compat_dir = os.path.join(sweep_dir, mars_run_name)
+
+            entry = manifest.get("phase1", {}).get(key, {})
+            status = entry.get("status", "pending")
+
+            # ── SKIP if already complete and verified ────────────────────
+            if (status == "complete"
+                    and check_mars_conversion_complete(
+                        mars_compat_dir, args.bootstraps)):
+                n_tet = entry.get("enriched_tetramers", "?")
+                print(f"\n  [{i}/{len(param_combos)}] hw={hw} ew={ew} -- "
+                      f"complete ({n_tet} tetramers), skipping")
+                continue
+
+            # ── FAILED previously: clean partial state before re-running ─
+            if status == "failed":
+                print(f"\n  [{i}/{len(param_combos)}] hw={hw} ew={ew} -- "
+                      f"previously failed, re-running")
+                if os.path.isdir(mars_compat_dir):
+                    shutil.rmtree(mars_compat_dir)
+            else:
+                print(f"\n  [{i}/{len(param_combos)}] hw={hw} ew={ew}")
+
+            # ── Check for existing raw rnamotifs results to adopt ────────
+            rnamotifs_result_dir = find_rnamotifs_result_dir(
+                results_parent, mars_run_name)
+
+            needs_run = True
+            if check_rnamotifs_complete(rnamotifs_result_dir, args.bootstraps):
+                print(f"    Found existing results: {rnamotifs_result_dir}")
+                needs_run = False
+
+            if needs_run:
+                # Run rnamotifs with this parameter combination
+                kmer_flag = f" -k {args.kmer_size}" if hasattr(args, 'kmer_size') and args.kmer_size != 4 else ""
+                cmd = (
+                    f"{rnamotifs_bin} {input_file} "
+                    f"-n {mars_run_name} "
+                    f"-g {args.genome} "
+                    f"--n {2 * hw} "
+                    f"-m {args.min_height} "
+                    f"-p {args.pth} "
+                    f"-e {ew} "
+                    f"--in-exon {args.in_exon} "
+                    f"--in-intron {args.in_intron} "
+                    f"-b {args.bootstraps} "
+                    f"-c {args.cores} "
+                    f"--p-fisher {args.p_fisher} "
+                    f"--p-empirical {args.p_empirical}"
+                    f"{' --event-type ' + args.event_type if args.event_type != 'SE' else ''}"
+                    f"{kmer_flag}"
+                )
+
+                try:
+                    run(cmd)
+                except subprocess.CalledProcessError as e:
+                    print(f"  WARNING: RNAmotifs failed for hw={hw} ew={ew} "
+                          f"(exit code {e.returncode}). Continuing...")
+                    manifest["phase1"][key] = {
+                        "status": "failed",
+                        "error": f"rnamotifs exit code {e.returncode}",
+                        "timestamp": _now_iso(),
+                    }
+                    save_manifest(mars_output, manifest)
+                    continue
+
+                # Find the actual results directory created by rnamotifs
+                rnamotifs_result_dir = find_rnamotifs_result_dir(
+                    results_parent, mars_run_name)
+
+            if rnamotifs_result_dir is None:
+                print(f"  WARNING: Could not find results directory for "
+                      f"hw={hw} ew={ew}")
+                manifest["phase1"][key] = {
+                    "status": "failed",
+                    "error": "result directory not found",
+                    "timestamp": _now_iso(),
+                }
+                save_manifest(mars_output, manifest)
+                continue
+
+            print(f"    RNAmotifs output: {rnamotifs_result_dir}")
+            print(f"    Converting to MARS format: {mars_compat_dir}")
+
+            # Convert to MARS-compatible format
+            ok = convert_to_mars_format(
+                rnamotifs_result_dir, mars_compat_dir,
+                args.bootstraps, args.p_fisher, args.p_empirical,
+                args.in_exon, args.in_intron, r_mars_dir)
+
+            if ok:
+                n_tet = _count_enriched_tetramers(mars_compat_dir)
+                print(f"    Conversion complete ({n_tet} enriched tetramers)")
+                manifest["phase1"][key] = {
+                    "status": "complete",
+                    "result_dir": mars_compat_dir,
+                    "enriched_tetramers": n_tet,
+                    "timestamp": _now_iso(),
+                }
+            else:
+                print(f"    WARNING: Conversion incomplete for hw={hw} ew={ew}")
+                manifest["phase1"][key] = {
+                    "status": "failed",
+                    "error": "MARS format conversion failed",
+                    "timestamp": _now_iso(),
+                }
+
+            # Persist manifest after each combo (crash-safe)
+            save_manifest(mars_output, manifest)
+
+        phase1_time = time.time() - pipeline_t0
+        print(f"\n  Phase 1 complete ({fmt_time(phase1_time)})")
+    else:
+        print("\n  --> Skipping Phase 1 (--skip-rnamotifs)")
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # PHASE 2: Compute association scores
+    # ═════════════════════════════════════════════════════════════════════════
+
+    if not args.skip_scores:
+        if check_phase2_complete(mars_output, args.name):
+            step("PHASE 2: Association scores already complete, skipping")
+            manifest["phase2"] = {
+                "status": "complete",
+                "timestamp": manifest.get("phase2", {}).get(
+                    "timestamp", _now_iso()),
+            }
+            save_manifest(mars_output, manifest)
+        else:
+            step("PHASE 2: Computing association scores (C++)")
+
+            mars_score_bin = os.path.join(root, "build", "rnamotifs_mars_score")
+            if not os.path.isfile(mars_score_bin):
+                sys.exit(f"Error: rnamotifs_mars_score binary not found at "
+                         f"{mars_score_bin}. Run: cmake --build build")
+
+            cmd = (
+                f"{mars_score_bin} "
+                f"-i {input_file} "
+                f"-n {args.name} "
+                f"-d {sweep_dir} "
+                f"-r {mars_dir} "
+                f"-c {args.cell_line} "
+                f"-p {args.cores} "
+                f"-e {eclip_dir} "
+                f"-o {scores_dir} "
+                f"--in-exon {args.in_exon} "
+                f"--in-intron {args.in_intron} "
+                f"-b {args.bootstraps} "
+                f"--summary"
+            )
+
+            try:
+                run(cmd)
+                print("  Phase 2 complete")
+                manifest["phase2"] = {
+                    "status": "complete",
+                    "timestamp": _now_iso(),
+                }
+            except subprocess.CalledProcessError as e:
+                manifest["phase2"] = {
+                    "status": "failed",
+                    "error": f"exit code {e.returncode}",
+                    "timestamp": _now_iso(),
+                }
+                save_manifest(mars_output, manifest)
+                sys.exit(f"Error: rnamotifs_mars_score failed "
+                         f"(exit code {e.returncode})")
+            save_manifest(mars_output, manifest)
+    else:
+        print("\n  --> Skipping Phase 2 (--skip-scores)")
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # PHASE 3: Generate heatmap
+    # ═════════════════════════════════════════════════════════════════════════
+
+    if check_phase3_complete(mars_output, args.name, args.cell_line):
+        step("PHASE 3: Heatmap already complete, skipping")
+        manifest["phase3"] = {
+            "status": "complete",
+            "timestamp": manifest.get("phase3", {}).get(
+                "timestamp", _now_iso()),
+        }
+        save_manifest(mars_output, manifest)
+    else:
+        step("PHASE 3: Generating association heatmap")
+
+        rnamotifs_res = sweep_dir
+        if not rnamotifs_res.endswith("/"):
+            rnamotifs_res += "/"
+
+        repo = mars_dir
+        if not repo.endswith("/"):
+            repo += "/"
+
+        deseq_arg = args.deseq_file if args.deseq_file else "NA"
+
+        heatmap_script = os.path.join(r_mars_dir, "generate_heatmap.R")
+        cmd = (
+            f"Rscript {heatmap_script} "
+            f"-i {input_file} "
+            f"-n {args.name} "
+            f"-d {rnamotifs_res} "
+            f"-r {repo} "
+            f"-c {args.cell_line} "
+            f"-e {deseq_arg} "
+            f"-p {args.cores} "
+            f"-o {scores_dir} "
+            f"-s {r_mars_dir} "
+            f"--in_exon {args.in_exon} "
+            f"--in_intron {args.in_intron} "
+            f"--sort_by {args.sort_by} "
+            f"--top_mrms {args.heatmap_top_mrms} "
+            f"--top_rbps {args.heatmap_top_rbps}"
+        )
+
+        try:
+            run(cmd, env=r_env())
+            print("  Phase 3 complete")
+            manifest["phase3"] = {
+                "status": "complete",
+                "timestamp": _now_iso(),
+            }
+        except subprocess.CalledProcessError as e:
+            manifest["phase3"] = {
+                "status": "failed",
+                "error": f"exit code {e.returncode}",
+                "timestamp": _now_iso(),
+            }
+            save_manifest(mars_output, manifest)
+            sys.exit(f"Error: generate_heatmap.R failed "
+                     f"(exit code {e.returncode})")
+        save_manifest(mars_output, manifest)
+
+    # ── Done ─────────────────────────────────────────────────────────────────
+    total_time = time.time() - pipeline_t0
+    print(f"\n  --> RNAmotifs-MaRs complete")
+    print(f"      Total time: {fmt_time(total_time)}")
+    print(f"      Results:    {mars_output}")
+    print()
+
+
+if __name__ == "__main__":
+    main()

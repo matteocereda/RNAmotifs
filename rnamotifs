@@ -66,8 +66,15 @@ def find_root():
 
 
 def find_binary(name, root):
-    for d in [os.path.join(root, "build"),
-              os.path.join(root, "bin"), root]:
+    # Optional override: RNAMOTIFS_BUILD=<dir> is searched FIRST, so an isolated
+    # build (e.g. build_det = Option-1 per-iteration-seed bootstrap) can be used
+    # without disturbing build/. Unset => identical to the original behaviour.
+    dirs = []
+    env_build = os.environ.get("RNAMOTIFS_BUILD")
+    if env_build:
+        dirs.append(env_build if os.path.isabs(env_build) else os.path.join(root, env_build))
+    dirs += [os.path.join(root, "build"), os.path.join(root, "bin"), root]
+    for d in dirs:
         path = os.path.join(d, name)
         if os.path.isfile(path) and os.access(path, os.X_OK):
             return path
@@ -93,7 +100,7 @@ def run_with_progress(cmd, total, label="Processing", env=None):
         run_env.update(env)
     proc = subprocess.Popen(
         cmd, shell=True, env=run_env,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
     )
     t0 = time.time()
     for line in proc.stderr:
@@ -120,7 +127,6 @@ def sanitize(val):
 def make_run_name(args):
     parts = [
         date.today().strftime("%Y%m%d"),
-        args.name,
         args.genome,
         f"w{args.half_window}",
         f"h{args.min_height}",
@@ -270,6 +276,84 @@ def convert_rmats_se(rmats_file, output_file,
     return len(enhanced), len(silenced), len(constitutive)
 
 
+def convert_rmats_ri(rmats_file, output_file,
+                     incl_threshold, constit_threshold,
+                     fdr_threshold, max_constitutive, seed=42):
+    """Convert rMATS RI (Retained Intron) output to RNAmotifs input format.
+
+    Coordinate mapping for IR:
+      v5 = upstreamES  (upstream exon start)
+      v6 = upstreamEE  (5' splice site)
+      v7 = downstreamES (3' splice site)
+      v8 = downstreamEE (downstream exon end)
+
+    dIRank: same sign convention as SE — positive IncLevelDifference
+    (retention UP upon KD) means RBP silences retention (dIRank < -1).
+    """
+    import csv
+
+    enhanced = []
+    silenced = []
+    constitutive = []
+
+    with open(rmats_file) as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for row in reader:
+            try:
+                fdr  = float(row["FDR"])
+                incl = float(row["IncLevelDifference"])
+            except (ValueError, KeyError):
+                continue
+
+            chrom  = row["chr"]
+            strand = row["strand"]
+
+            entry = {
+                "rmats_id": row["ID"],
+                "chrom": chrom,
+                "strand": strand,
+                "upstream_es": row["upstreamES"],
+                "upstream_ee": row["upstreamEE"],
+                "downstream_es": row["downstreamES"],
+                "downstream_ee": row["downstreamEE"],
+                "incl": incl,
+                "fdr": fdr,
+            }
+
+            abs_incl = abs(incl)
+
+            if abs_incl >= incl_threshold and fdr <= fdr_threshold:
+                if incl < 0:
+                    enhanced.append(entry)
+                else:
+                    silenced.append(entry)
+            elif abs_incl <= constit_threshold:
+                constitutive.append(entry)
+
+    if len(constitutive) > max_constitutive:
+        random.seed(seed)
+        constitutive = random.sample(constitutive, max_constitutive)
+
+    all_events = []
+    for e in enhanced:
+        dirank = 1.0 + abs(e["incl"]) * 10.0
+        all_events.append((e, dirank))
+    for e in silenced:
+        dirank = -(1.0 + abs(e["incl"]) * 10.0)
+        all_events.append((e, dirank))
+    for e in constitutive:
+        all_events.append((e, 0.0))
+
+    with open(output_file, "w") as f:
+        for idx, (e, dirank) in enumerate(all_events, 1):
+            f.write(f"{idx};{e['rmats_id']};{e['chrom']};{e['strand']};"
+                    f"{e['upstream_es']};{e['upstream_ee']};"
+                    f"{e['downstream_es']};{e['downstream_ee']};"
+                    f"{dirank:.2f};RI\n")
+
+    return len(enhanced), len(silenced), len(constitutive)
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -283,24 +367,33 @@ def main():
     parser.add_argument("-n", "--name", required=True,
         help="Analysis name (e.g. NOVA)")
     parser.add_argument("-g", "--genome", required=True,
-        choices=["hg19", "hg38", "mm9", "mm10"],
+        choices=["hg19", "hg38", "mm9", "mm10", "mm39"],
         help="Reference genome")
     parser.add_argument("-w", "--half-window", type=int, default=15,
-        help="Half-window for clustering (default: 15)")
+        help="Clustering half-window hw (default: 15). Paper notation: the clustering "
+             "window is n = 2*hw, so hw=15 corresponds to n=30. See --n.")
+    parser.add_argument("--n", type=int, default=None,
+        help="Clustering window n in paper notation (n = 2*hw). If given, overrides -w "
+             "with hw = n/2 (n must be even). E.g. --n 30 == -w 15.")
     parser.add_argument("-m", "--min-height", type=int, default=4,
         help="Minimum cluster height (default: 4)")
     parser.add_argument("-p", "--pth", type=float, default=0.5,
         help="Percentage threshold (default: 0.5)")
     parser.add_argument("-e", "--enrichment-window", type=int, default=30,
-        help="Enrichment window in bp (default: 30)")
+        help="Enrichment window e in bp (default: 30). Paper notation: e.")
     parser.add_argument("--in-exon", type=int, default=30,
         help="Region extent into exons in bp (default: 30)")
     parser.add_argument("--in-intron", type=int, default=300,
         help="Region extent into introns in bp (default: 300)")
+    parser.add_argument("--event-type", default="SE",
+        choices=["SE", "RI"],
+        help="Splicing event type: SE (skipped exon) or RI (intron retention)")
     parser.add_argument("-b", "--bootstraps", type=int, default=10000,
         help="Bootstrap iterations (default: 10000)")
     parser.add_argument("-c", "--cores", type=int, default=1,
         help="CPU cores (default: 1)")
+    parser.add_argument("-k", "--kmer-size", type=int, default=4,
+        help="K-mer size for motif enumeration (default: 4)")
     parser.add_argument("--p-fisher", type=float, default=0.1,
         help="Fisher p-value threshold (default: 0.1)")
     parser.add_argument("--p-empirical", type=float, default=0.00005,
@@ -319,7 +412,7 @@ def main():
     # rMATS input options
     rmats = parser.add_argument_group("rMATS input (use with --from-rmats)")
     rmats.add_argument("--from-rmats", action="store_true",
-        help="Input is an rMATS SE.MATS.*.txt file (Skipped Exon)")
+        help="Input is an rMATS file (SE or RI, selected by --event-type)")
     rmats.add_argument("--rmats-incl", type=float, default=0.1,
         help="Min |IncLevelDifference| for alternative exons (default: 0.1)")
     rmats.add_argument("--rmats-fdr", type=float, default=0.05,
@@ -331,6 +424,12 @@ def main():
 
     args = parser.parse_args()
 
+    # Paper notation: clustering window n = 2*hw. --n overrides -w with hw = n/2.
+    if args.n is not None:
+        if args.n % 2 != 0:
+            parser.error(f"--n must be even (n = 2*hw); got {args.n}")
+        args.half_window = args.n // 2
+
     root = find_root()
     data_root = root
     input_file = os.path.abspath(args.input_file)
@@ -339,7 +438,7 @@ def main():
 
     organism = "Human" if args.genome.startswith("hg") else "Mouse"
     run_name = make_run_name(args)
-    results_dir = os.path.join(root, "results", run_name)
+    results_dir = os.path.join(root, "results", args.name, run_name)
     results_parent = os.path.join(root, "results")
     os.makedirs(results_dir, exist_ok=True)
 
@@ -353,21 +452,31 @@ def main():
 
     # ── Convert rMATS if requested ───────────────────────────────────────────
     if args.from_rmats:
-        step("Converting rMATS SE input")
+        evt = args.event_type
+        step(f"Converting rMATS {evt} input")
         converted_file = os.path.join(results_dir, "rnamotifs_input.txt")
-        n_enh, n_sil, n_ctl = convert_rmats_se(
-            input_file, converted_file,
-            incl_threshold=args.rmats_incl,
-            constit_threshold=args.rmats_constit,
-            fdr_threshold=args.rmats_fdr,
-            max_constitutive=args.rmats_max_constit,
-        )
-        print(f"  rMATS SE file   : {input_file}")
+        if evt == "RI":
+            n_enh, n_sil, n_ctl = convert_rmats_ri(
+                input_file, converted_file,
+                incl_threshold=args.rmats_incl,
+                constit_threshold=args.rmats_constit,
+                fdr_threshold=args.rmats_fdr,
+                max_constitutive=args.rmats_max_constit,
+            )
+        else:
+            n_enh, n_sil, n_ctl = convert_rmats_se(
+                input_file, converted_file,
+                incl_threshold=args.rmats_incl,
+                constit_threshold=args.rmats_constit,
+                fdr_threshold=args.rmats_fdr,
+                max_constitutive=args.rmats_max_constit,
+            )
+        print(f"  rMATS {evt} file : {input_file}")
         print(f"  |IncLevel| >= {args.rmats_incl} & FDR <= {args.rmats_fdr}"
               f"  -->  {n_enh} enhanced, {n_sil} silenced")
         print(f"  |IncLevel| <= {args.rmats_constit}"
               f"  -->  {n_ctl} constitutive (max {args.rmats_max_constit})")
-        print(f"  Total exons     : {n_enh + n_sil + n_ctl}")
+        print(f"  Total events    : {n_enh + n_sil + n_ctl}")
         print(f"  Converted to    : {converted_file}")
         input_file = converted_file
 
@@ -385,11 +494,12 @@ def main():
   In-intron        : {args.in_intron}
   Bootstraps       : {args.bootstraps}
   Cores            : {args.cores}
+  K-mer size       : {args.kmer_size}
   P(Fisher)        : {args.p_fisher}
   P(Empirical)     : {args.p_empirical}
   {'─' * 50}
-  Output           : results/{run_name}
-  Log              : results/{run_name}/rnamotifs.log
+  Output           : results/{args.name}/{run_name}
+  Log              : results/{args.name}/{run_name}/rnamotifs.log
   {'─' * 50}""")
 
     pipeline_t0 = time.time()
@@ -398,13 +508,14 @@ def main():
     step("Steps 1-2/6  Regions + tetramer search")
 
     search_bin = find_binary("rnamotifs_search", root)
-    print(f"  512 motifs, {args.cores} cores (C++/OpenMP)")
+    n_motifs = 2 * (4 ** args.kmer_size)  # non-degen + degen
+    print(f"  {n_motifs} motifs (k={args.kmer_size}), {args.cores} cores (C++/OpenMP)")
 
     run_with_progress(
         f"{search_bin} {input_file} {data_root} {args.genome} {args.name} "
-        f"{data_root} {args.half_window} {args.min_height} {args.pth} {args.cores}",
-        total=512,
-        label="Tetramer search"
+        f"{data_root} {args.half_window} {args.min_height} {args.pth} {args.cores} {args.kmer_size}",
+        total=n_motifs,
+        label="K-mer search"
     )
 
     # ── Step 3: Organise into data/ subfolder ────────────────────────────────
@@ -442,10 +553,11 @@ def main():
         if os.path.isdir(regions_parent) and not os.listdir(regions_parent):
             os.rmdir(regions_parent)
 
-    # Clean up search intermediate motif results
-    search_motifs = os.path.join(data_root, "results", args.name)
-    if os.path.exists(search_motifs):
-        shutil.rmtree(search_motifs)
+    # Clean up search intermediate motif results (preserve results_dir)
+    for _subdir in ["motifs.raw", "motifs.final"]:
+        _cleanup = os.path.join(data_root, "results", args.name, _subdir)
+        if os.path.exists(_cleanup):
+            shutil.rmtree(_cleanup)
 
     print(f"  Data: {data_dir}")
 
@@ -466,6 +578,8 @@ def main():
             f.write(f"enrichment_window={args.enrichment_window}\n")
             f.write(f"in_exon={args.in_exon}\n")
             f.write(f"in_intron={args.in_intron}\n")
+            if args.event_type != "SE":
+                f.write(f"event_type={args.event_type}\n")
 
         print(f"  [{mode}] Tetramer mapping + counting...")
         run(f"{tetramer_bin} -c {config_path}")
@@ -658,7 +772,7 @@ def main():
     total_time = time.time() - pipeline_t0
     print(f"\n  --> RNAmotifs complete")
     print(f"      Total time: {fmt_time(total_time)}")
-    print(f"      Results: results/{run_name}\n")
+    print(f"      Results: results/{args.name}/{run_name}\n")
 
     # Restore streams before closing log to avoid cleanup errors
     sys.stdout = sys.__stdout__
