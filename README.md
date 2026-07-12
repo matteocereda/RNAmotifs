@@ -330,12 +330,9 @@ Measured end-to-end on the identical NOVA input at B = 1,000:
 | v1 (Python 2 m3_light + gMotifs C++03 + R) | 1 | ~70 min |
 | v2 (C++17 + OpenMP + R) | 1 | ~13 min |
 | v2 (C++17 + OpenMP + R) | 10 | ~2.6 min |
-| v2 with `--structure --conservation` | 10 | ~1h 11min |
 
 The v1 pipeline is single-threaded throughout, giving a **~26×** end-to-end
-speed-up for v2 (10 cores). Total peak resident memory stays < 4 GB. Structure
-and conservation profiling are I/O-bound (ViennaRNA folding, PhyloP lookup) and
-dominate the runtime when enabled.
+speed-up for v2 (10 cores). Total peak resident memory stays < 4 GB. 
 
 ### Result reproducibility
 
@@ -352,7 +349,6 @@ Both were verified on the NOVA dataset with matching parameters.
 - **OpenMP parallelism** -- 512 motifs processed across all CPU cores
 - **Constrained partition function** -- ViennaRNA with `compute_bpp=0` for structure profiling
 
-See [bench/](bench/) for full details and reproduction scripts.
 
 ---
 
