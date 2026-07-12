@@ -134,7 +134,7 @@ int main(int argc, char *argv[]) {
     if (argc < 6) {
         cerr << "Usage: " << argv[0]
              << " <splicing_file> <genome_dir> <genome> <tetramers_dir>"
-             << " <enriched_tets_file> <output_tsv> [n_cores]\n";
+             << " <enriched_tets_file> <output_tsv> [n_cores]" << endl;
         return 1;
     }
 
@@ -165,22 +165,22 @@ int main(int argc, char *argv[]) {
         }
     }
     if (enriched_tets.empty()) {
-        cerr << "No enriched tetramers\n"; return 1;
+        cerr << "No enriched tetramers" << endl; return 1;
     }
-    cerr << "Enriched tetramers: " << enriched_tets.size() << "\n";
+    cerr << "Enriched tetramers: " << enriched_tets.size() << endl;
 
     // Read exons
     vector<Exon> exons = read_splicing_file(splicing_file);
-    cerr << "Exons: " << exons.size() << "\n";
+    cerr << "Exons: " << exons.size() << endl;
 
     // Pre-load PhyloP scores
     set<string> chrom_set;
     for (auto &e : exons) chrom_set.insert(e.chrom);
-    cerr << "Loading PhyloP scores for " << chrom_set.size() << " chromosomes...\n";
+    cerr << "Loading PhyloP scores for " << chrom_set.size() << " chromosomes..." << endl;
     for (auto &ch : chrom_set) {
         preload_phylop(genome_dir, genome, ch);
         if (phylop_len[ch] == 0)
-            cerr << "  Warning: no PhyloP data for " << ch << "\n";
+            cerr << "  Warning: no PhyloP data for " << ch << endl;
     }
 
     // RNA map positions: computed from in_exon/in_intron and region centers
@@ -270,9 +270,9 @@ int main(int argc, char *argv[]) {
         }
 
         done++;
-        cerr << "PROGRESS " << done << " " << total << "\n";
+        cerr << "PROGRESS " << done << " " << total << endl;
     }
 
-    cerr << "Conservation profiling complete: " << output_tsv << "\n";
+    cerr << "Conservation profiling complete: " << output_tsv << endl;
     return 0;
 }

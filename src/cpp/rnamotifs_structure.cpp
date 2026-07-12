@@ -280,10 +280,10 @@ int main(int argc, char *argv[]) {
     if (argc < 7) {
         cerr << "Usage: " << argv[0]
              << " <splicing_file> <genome_dir> <genome> <tetramers_dir>"
-             << " <enriched_tets_file> <output_tsv> [n_cores] [window]\n"
-             << "\n"
-             << "  enriched_tets_file: one tetramer name per line\n"
-             << "  window: folding window size (default: 31)\n";
+             << " <enriched_tets_file> <output_tsv> [n_cores] [window]" << endl
+             << endl
+             << "  enriched_tets_file: one tetramer name per line" << endl
+             << "  window: folding window size (default: 31)" << endl;
         return 1;
     }
 
@@ -318,21 +318,21 @@ int main(int argc, char *argv[]) {
         }
     }
     if (enriched_tets.empty()) {
-        cerr << "No enriched tetramers in " << enriched_file << "\n";
+        cerr << "No enriched tetramers in " << enriched_file << endl;
         return 1;
     }
-    cerr << "Enriched tetramers: " << enriched_tets.size() << "\n";
+    cerr << "Enriched tetramers: " << enriched_tets.size() << endl;
 
     // Read splicing file
     vector<Exon> exons = read_splicing_file(splicing_file);
-    cerr << "Exons: " << exons.size() << "\n";
+    cerr << "Exons: " << exons.size() << endl;
 
     // Pre-load chromosomes
     set<string> chrom_set;
     for (auto &e : exons) chrom_set.insert(e.chrom);
     for (auto &ch : chrom_set)
         preload_chromosome(genome_dir, genome, ch);
-    cerr << "Chromosomes loaded: " << chrom_set.size() << "\n";
+    cerr << "Chromosomes loaded: " << chrom_set.size() << endl;
 
     // RNA map positions: computed from in_exon/in_intron and region centers
     vector<int> map_positions;
@@ -445,9 +445,9 @@ int main(int argc, char *argv[]) {
         }
 
         done++;
-        cerr << "PROGRESS " << done << " " << total << "\n";
+        cerr << "PROGRESS " << done << " " << total << endl;
     }
 
-    cerr << "Structure profiling complete: " << output_tsv << "\n";
+    cerr << "Structure profiling complete: " << output_tsv << endl;
     return 0;
 }

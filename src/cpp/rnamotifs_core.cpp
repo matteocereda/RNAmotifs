@@ -53,6 +53,7 @@ Config::Config(int argc, char *argv[]) {
             case 5: enrichment_window = stoi(val); break;
             case 6: in_exon = stoi(val); break;
             case 7: in_intron = stoi(val); break;
+            case 8: event_type = val; break;
             default:
                 cerr << "Warning: extra config line ignored: " << line << "\n";
                 break;
@@ -61,10 +62,11 @@ Config::Config(int argc, char *argv[]) {
     }
 
     if (idx < 8) {
-        cerr << "Error: config file incomplete (expected 8 lines, got "
+        cerr << "Error: config file incomplete (expected at least 8 lines, got "
              << idx << ")\n";
         exit(1);
     }
+    // event_type defaults to "SE" if not in config (line 9 is optional)
 
     compute_regions();
 
@@ -320,42 +322,85 @@ static int process_tetramer_file(
             else if (dIRank >= cfg.dIRO)                    { CE1++;  cat = 1;  }
             else if (dIRank <= -cfg.dIRO)                   { CEm1++; cat = -1; }
 
-            // Adaptive region extents: if intron/exon shorter than threshold, use half
-            unsigned int left_intron_len  = in_start - skip_start;
-            unsigned int exon_len         = in_stop  - in_start;
-            unsigned int right_intron_len = skip_stop - in_stop;
+            // Auto-detect event type from optional 10th field
+            string evt = cfg.event_type;
+            if (pars.size() > 9 && !pars[9].empty()) evt = pars[9];
 
             unsigned int ie = cfg.in_exon;
             unsigned int ii = cfg.in_intron;
-            unsigned int ie_actual = (exon_len < ie * 2) ? exon_len / 2 : ie;
-            unsigned int ii_left   = (left_intron_len < ii * 2)  ? left_intron_len / 2  : ii;
-            unsigned int ii_right  = (right_intron_len < ii * 2) ? right_intron_len / 2 : ii;
 
-            // Region boundaries
-            unsigned int r1s = skip_start - ie_actual;
-            unsigned int r1e = skip_start + ii_left;
-            unsigned int r2s = in_start   - ii_left;
-            unsigned int r2e = in_start   + ie_actual;
-            unsigned int r3s = in_stop    - ie_actual;
-            unsigned int r3e = in_stop    + ii_right;
-            unsigned int r4s = skip_stop  - ii_right;
-            unsigned int r4e = skip_stop  + ie_actual;
+            unsigned int r1s, r1e, r2s, r2e, r3s, r3e, r4s, r4e;
+            unsigned int intron_left, exon_span, intron_right;
 
-            unsigned int left_mid  = skip_start + (in_start - skip_start) / 2;
-            unsigned int exon_mid  = in_start   + (in_stop  - in_start)  / 2;
-            unsigned int right_mid = in_stop    + (skip_stop - in_stop)  / 2;
+            if (evt == "RI") {
+                // ── Intron Retention regions ──────────────────────────
+                // v5=upstreamES, v6=upstreamEE (5'SS), v7=downstreamES (3'SS), v8=downstreamEE
+                unsigned int upstream_exon_len   = in_start - skip_start;
+                unsigned int retained_intron_len = in_stop  - in_start;
+                unsigned int downstream_exon_len = skip_stop - in_stop;
+                unsigned int half_intron = retained_intron_len / 2;
 
-            // Clamp overlapping boundaries
-            if (left_mid  < r1e) r1e = left_mid;
-            if (left_mid  > r2s) r2s = left_mid;
-            if (exon_mid  < r2e) r2e = exon_mid;
-            if (exon_mid  > r3s) r3s = exon_mid;
-            if (right_mid < r3e) r3e = right_mid;
-            if (right_mid > r4s) r4s = right_mid;
+                // in_exon → extent into flanking exons (R1, R4)
+                unsigned int ie_left  = (upstream_exon_len < ie * 2)   ? upstream_exon_len / 2   : ie;
+                unsigned int ie_right = (downstream_exon_len < ie * 2) ? downstream_exon_len / 2 : ie;
+                // in_intron → extent into retained intron (R2, R3), capped at half-intron
+                unsigned int ii_actual = (half_intron < ii) ? half_intron : ii;
 
-            unsigned int intron_left  = r1e - skip_start;
-            unsigned int exon_span    = r2e - in_start;
-            unsigned int intron_right = r3e - in_stop;
+                // R1: upstream exon near 5'SS
+                r1s = in_start - ie_left;
+                r1e = in_start;
+                // R2: retained intron from 5'SS
+                r2s = in_start;
+                r2e = in_start + ii_actual;
+                // R3: retained intron toward 3'SS
+                r3s = in_stop - ii_actual;
+                r3e = in_stop;
+                // R4: downstream exon near 3'SS
+                r4s = in_stop;
+                r4e = in_stop + ie_right;
+
+                // Clamp R2/R3 at intron midpoint if they overlap
+                unsigned int intron_mid = in_start + half_intron;
+                if (r2e > intron_mid) r2e = intron_mid;
+                if (r3s < intron_mid) r3s = intron_mid;
+
+                intron_left  = ie_left;       // "intron" side of R1 boundary = exon extent
+                exon_span    = r2e - in_start; // "exon" side of R2 boundary = intron extent
+                intron_right = ie_right;       // "intron" side of R3 boundary = exon extent
+            } else {
+                // ── Cassette Exon (SE) regions (original logic) ──────
+                unsigned int left_intron_len  = in_start - skip_start;
+                unsigned int exon_len         = in_stop  - in_start;
+                unsigned int right_intron_len = skip_stop - in_stop;
+
+                unsigned int ie_actual = (exon_len < ie * 2) ? exon_len / 2 : ie;
+                unsigned int ii_left   = (left_intron_len < ii * 2)  ? left_intron_len / 2  : ii;
+                unsigned int ii_right  = (right_intron_len < ii * 2) ? right_intron_len / 2 : ii;
+
+                r1s = skip_start - ie_actual;
+                r1e = skip_start + ii_left;
+                r2s = in_start   - ii_left;
+                r2e = in_start   + ie_actual;
+                r3s = in_stop    - ie_actual;
+                r3e = in_stop    + ii_right;
+                r4s = skip_stop  - ii_right;
+                r4e = skip_stop  + ie_actual;
+
+                unsigned int left_mid  = skip_start + (in_start - skip_start) / 2;
+                unsigned int exon_mid  = in_start   + (in_stop  - in_start)  / 2;
+                unsigned int right_mid = in_stop    + (skip_stop - in_stop)  / 2;
+
+                if (left_mid  < r1e) r1e = left_mid;
+                if (left_mid  > r2s) r2s = left_mid;
+                if (exon_mid  < r2e) r2e = exon_mid;
+                if (exon_mid  > r3s) r3s = exon_mid;
+                if (right_mid < r3e) r3e = right_mid;
+                if (right_mid > r4s) r4s = right_mid;
+
+                intron_left  = r1e - skip_start;
+                exon_span    = r2e - in_start;
+                intron_right = r3e - in_stop;
+            }
 
             bool has_hit = false;
             // Indexed lookup: find BED records on same chr+strand
@@ -382,23 +427,47 @@ static int process_tetramer_file(
                     bed.exon_id  = exon_id;
                     bed.category = cat;
 
-                    if (bl.chrom_start <= r1e && bl.chrom_end >= r1s) {
-                        bed.map_to_splicing_map(cfg, fwd, 0, r1s, r1e, skip_start, intron_left, cfg.in_exon);
-                        bed_results.push_back(bed);
-                    }
-                    else if (bl.chrom_start <= r2e && bl.chrom_end >= r2s) {
-                        bed.map_to_splicing_map(cfg, fwd, 1, r2s, r2e, in_start, intron_left, exon_span);
-                        bed_results.push_back(bed);
-                        if (bl.chrom_end >= r2s + 100 && bl.chrom_start <= r2e - 15) has_hit = true;
-                    }
-                    else if (bl.chrom_start <= r3e && bl.chrom_end >= r3s) {
-                        bed.map_to_splicing_map(cfg, fwd, 2, r3s, r3e, in_stop, intron_right, exon_span);
-                        bed_results.push_back(bed);
-                        if (bl.chrom_end >= r3s + 15 && bl.chrom_start <= r3e - 130) has_hit = true;
-                    }
-                    else if (bl.chrom_start <= r4e && bl.chrom_end >= r4s) {
-                        bed.map_to_splicing_map(cfg, fwd, 3, r4s, r4e, skip_stop, intron_right, cfg.in_exon);
-                        bed_results.push_back(bed);
+                    if (evt == "RI") {
+                        // IR: R1=upstream exon, R2=5' intron, R3=3' intron, R4=downstream exon
+                        // Boundaries are at in_start (5'SS) and in_stop (3'SS)
+                        if (bl.chrom_start <= r1e && bl.chrom_end >= r1s) {
+                            bed.map_to_splicing_map(cfg, fwd, 0, r1s, r1e, in_start, intron_left, intron_left);
+                            bed_results.push_back(bed);
+                        }
+                        else if (bl.chrom_start <= r2e && bl.chrom_end >= r2s) {
+                            bed.map_to_splicing_map(cfg, fwd, 1, r2s, r2e, in_start, intron_left, exon_span);
+                            bed_results.push_back(bed);
+                            has_hit = true;
+                        }
+                        else if (bl.chrom_start <= r3e && bl.chrom_end >= r3s) {
+                            bed.map_to_splicing_map(cfg, fwd, 2, r3s, r3e, in_stop, exon_span, intron_right);
+                            bed_results.push_back(bed);
+                            has_hit = true;
+                        }
+                        else if (bl.chrom_start <= r4e && bl.chrom_end >= r4s) {
+                            bed.map_to_splicing_map(cfg, fwd, 3, r4s, r4e, in_stop, intron_right, intron_right);
+                            bed_results.push_back(bed);
+                        }
+                    } else {
+                        // SE: original cassette exon mapping
+                        if (bl.chrom_start <= r1e && bl.chrom_end >= r1s) {
+                            bed.map_to_splicing_map(cfg, fwd, 0, r1s, r1e, skip_start, intron_left, cfg.in_exon);
+                            bed_results.push_back(bed);
+                        }
+                        else if (bl.chrom_start <= r2e && bl.chrom_end >= r2s) {
+                            bed.map_to_splicing_map(cfg, fwd, 1, r2s, r2e, in_start, intron_left, exon_span);
+                            bed_results.push_back(bed);
+                            if (bl.chrom_end >= r2s + 100 && bl.chrom_start <= r2e - 15) has_hit = true;
+                        }
+                        else if (bl.chrom_start <= r3e && bl.chrom_end >= r3s) {
+                            bed.map_to_splicing_map(cfg, fwd, 2, r3s, r3e, in_stop, intron_right, exon_span);
+                            bed_results.push_back(bed);
+                            if (bl.chrom_end >= r3s + 15 && bl.chrom_start <= r3e - 130) has_hit = true;
+                        }
+                        else if (bl.chrom_start <= r4e && bl.chrom_end >= r4s) {
+                            bed.map_to_splicing_map(cfg, fwd, 3, r4s, r4e, skip_stop, intron_right, cfg.in_exon);
+                            bed_results.push_back(bed);
+                        }
                     }
                 }
             }
@@ -470,7 +539,7 @@ int run_tetramer(Config &cfg) {
 
     for (const auto &bed_path : bed_files) {
         string fname = fs::path(bed_path).filename().string();
-        string tet = fname.substr(0, 4);
+        string tet = fname.substr(0, fname.size() - 4); // strip .bed
         string out = cfg.results_folder + fname;
         cout << "  tetramer " << tet << "\n";
         process_tetramer_file(cfg, cfg.splicing_file, bed_path, out, tet, stats);
@@ -535,29 +604,63 @@ static int count_per_regions(
             else if (dIRank >= cfg.dIRO)                     cat = 1;
             else if (dIRank <= -cfg.dIRO)                    cat = -1;
 
+            // Auto-detect event type from optional 10th field
+            string evt_c = cfg.event_type;
+            if (pars.size() > 9 && !pars[9].empty()) evt_c = pars[9];
+
             unsigned int exon_len_c = in_stop - in_start;
-            unsigned int ie_c = (exon_len_c < cfg.in_exon * 2) ? exon_len_c / 2 : cfg.in_exon;
-
-            unsigned int r1s = in_start - 5 - cfg.enrichment_window;
-            unsigned int r1e = in_start - 5;
-            unsigned int exon_r1e   = in_start + ie_c;
-            unsigned int exon_r2s   = in_stop  - ie_c;
-            unsigned int exon_mid   = in_start + exon_len_c / 2;
-            unsigned int r3s = in_stop + 10;
-            unsigned int r3e = in_stop + 10 + cfg.enrichment_window;
-
-            if (exon_mid < exon_r1e) exon_r1e = exon_mid;
-            if (exon_mid > exon_r2s) exon_r2s = exon_mid;
 
             bool h1 = false, h2 = false, h3 = false;
+            unsigned int lr1s, lr1e, lr3s, lr3e;
+            unsigned int exon_r1e, exon_r2s;
 
-            // Compute strand-adjusted region bounds before the loop
-            unsigned int lr1s = r1s, lr1e = r1e, lr3s = r3s, lr3e = r3e;
-            if (!fwd) {
-                lr1s = in_stop + 5;
-                lr1e = in_stop + 5 + cfg.enrichment_window;
-                lr3s = in_start - 10 - cfg.enrichment_window;
-                lr3e = in_start - 10;
+            if (evt_c == "RI") {
+                // IR counting: R1=upstream intron near 5'SS, R2=first half intron, R3=second half intron
+                unsigned int half_intron = exon_len_c / 2;
+                unsigned int ii_c = (half_intron < cfg.in_intron) ? half_intron : cfg.in_intron;
+
+                // R1: upstream of 5'SS (intronic flank)
+                lr1s = in_start - cfg.enrichment_window - 5;
+                lr1e = in_start - 5;
+                // R2: first half of retained intron
+                exon_r1e = in_start + ii_c;
+                // R3: second half of retained intron
+                exon_r2s = in_stop - ii_c;
+                // R3 intronic flank: downstream of 3'SS
+                lr3s = in_stop + 10;
+                lr3e = in_stop + 10 + cfg.enrichment_window;
+
+                unsigned int intron_mid = in_start + half_intron;
+                if (intron_mid < exon_r1e) exon_r1e = intron_mid;
+                if (intron_mid > exon_r2s) exon_r2s = intron_mid;
+
+                if (!fwd) {
+                    lr1s = in_stop + 5;
+                    lr1e = in_stop + 5 + cfg.enrichment_window;
+                    lr3s = in_start - 10 - cfg.enrichment_window;
+                    lr3e = in_start - 10;
+                }
+            } else {
+                // SE counting (original)
+                unsigned int ie_c = (exon_len_c < cfg.in_exon * 2) ? exon_len_c / 2 : cfg.in_exon;
+
+                lr1s = in_start - 5 - cfg.enrichment_window;
+                lr1e = in_start - 5;
+                exon_r1e = in_start + ie_c;
+                exon_r2s = in_stop  - ie_c;
+                unsigned int exon_mid = in_start + exon_len_c / 2;
+                lr3s = in_stop + 10;
+                lr3e = in_stop + 10 + cfg.enrichment_window;
+
+                if (exon_mid < exon_r1e) exon_r1e = exon_mid;
+                if (exon_mid > exon_r2s) exon_r2s = exon_mid;
+
+                if (!fwd) {
+                    lr1s = in_stop + 5;
+                    lr1e = in_stop + 5 + cfg.enrichment_window;
+                    lr3s = in_start - 10 - cfg.enrichment_window;
+                    lr3e = in_start - 10;
+                }
             }
 
             // Determine the overall genomic range that could produce any hit
@@ -618,7 +721,7 @@ int run_counting(Config &cfg) {
 
     for (const auto &bed_path : bed_files) {
         string fname = fs::path(bed_path).filename().string();
-        string tet = fname.substr(0, 4);
+        string tet = fname.substr(0, fname.size() - 4); // strip .bed
         string out = cfg.results_folder + tet + "_region_count.tsv";
         cout << "  counting " << tet << "\n";
         count_per_regions(cfg, cfg.splicing_file, bed_path, out);

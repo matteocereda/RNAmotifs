@@ -27,6 +27,14 @@ add_executable(rnamotifs_search src/cpp/rnamotifs_search.cpp)
 target_include_directories(rnamotifs_search PRIVATE src/cpp)
 target_link_libraries(rnamotifs_search stdc++fs OpenMP::OpenMP_CXX)
 
+# --- Tetramer selection (standalone) ---
+add_executable(rnamotifs_selection src/cpp/rnamotifs_selection.cpp)
+target_link_libraries(rnamotifs_selection stdc++fs)
+
+# --- MaRs association scoring (OpenMP) ---
+add_executable(rnamotifs_mars_score src/cpp/rnamotifs_mars_score.cpp)
+target_link_libraries(rnamotifs_mars_score stdc++fs OpenMP::OpenMP_CXX)
+
 # --- Conservation profiling (OpenMP) ---
 add_executable(rnamotifs_conservation src/cpp/rnamotifs_conservation.cpp)
 target_include_directories(rnamotifs_conservation PRIVATE src/cpp)
@@ -43,11 +51,11 @@ if(RNA_LIB AND RNA_INCLUDE)
     target_link_libraries(rnamotifs_structure
         ${RNA_LIB} stdc++fs OpenMP::OpenMP_CXX m)
     install(TARGETS rnamotifs_tetramer rnamotifs_counting rnamotifs_bootstrap
-            rnamotifs_search rnamotifs_conservation rnamotifs_structure
+            rnamotifs_search rnamotifs_selection rnamotifs_conservation rnamotifs_structure
             DESTINATION bin)
 else()
     message(STATUS "ViennaRNA not found — rnamotifs_structure will not be built")
     message(STATUS "  Install with: sudo apt-get install vienna-rna libvienna-rna-dev")
     install(TARGETS rnamotifs_tetramer rnamotifs_counting rnamotifs_bootstrap
-            rnamotifs_search rnamotifs_conservation DESTINATION bin)
+            rnamotifs_search rnamotifs_selection rnamotifs_conservation DESTINATION bin)
 endif()

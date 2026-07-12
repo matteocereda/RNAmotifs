@@ -157,7 +157,7 @@ static TetData read_count_file(const string &filepath, const string &tet_name) {
     td.name = tet_name;
     ifstream f(filepath);
     if (!f.is_open()) {
-        cerr << "Error: cannot open " << filepath << "\n";
+        cerr << "Error: cannot open " << filepath << endl;
         return td;
     }
     string line;
@@ -196,7 +196,7 @@ static vector<string> read_filelist(const string &path) {
 int main(int argc, char *argv[]) {
     if (argc < 4) {
         cerr << "Usage: " << argv[0]
-             << " <results_dir> <run_name> <n_bootstraps> [n_cores] [--estimate]\n";
+             << " <results_dir> <run_name> <n_bootstraps> [n_cores] [--estimate]" << endl;
         return 1;
     }
 
@@ -234,25 +234,25 @@ int main(int argc, char *argv[]) {
 
     int n_tet = (int)tets.size();
     if (n_tet == 0) {
-        cerr << "Error: no tetramer counts loaded\n";
+        cerr << "Error: no tetramer counts loaded" << endl;
         return 1;
     }
     int n_exons = (int)tets[0].type.size();
 
-    cerr << "Loaded " << n_tet << " tetramers, " << n_exons << " exons\n";
+    cerr << "Loaded " << n_tet << " tetramers, " << n_exons << " exons" << endl;
 
     // ── Original Fisher p-values ────────────────────────────────────────────
     vector<int> all_idx(n_exons);
     iota(all_idx.begin(), all_idx.end(), 0);
 
-    cerr << "Computing Fisher exact tests...\n";
+    cerr << "Computing Fisher exact tests..." << endl;
     vector<double> pFisher = compute_fisher_bh(all_idx, tets);
 
     // ── Estimate mode ───────────────────────────────────────────────────────
     if (estimate) {
         // Run 3 bootstrap iterations and print time per iteration
         auto t0 = chrono::steady_clock::now();
-        mt19937 rng(42);
+        mt19937 rng(30580);
         uniform_int_distribution<int> dist(0, n_exons - 1);
         for (int b = 0; b < 3; ++b) {
             vector<int> boot_idx(n_exons);
@@ -269,7 +269,7 @@ int main(int argc, char *argv[]) {
 
     // ── Bootstrap ───────────────────────────────────────────────────────────
     cerr << "Bootstrapping (" << n_boot << " iterations, "
-         << n_cores << " cores)...\n";
+         << n_cores << " cores)..." << endl;
 
     int n_vals = n_tet * 6;
     vector<long> global_counts(n_vals, 0);
@@ -283,12 +283,13 @@ int main(int argc, char *argv[]) {
 #ifdef _OPENMP
         tid = omp_get_thread_num();
 #endif
-        mt19937 rng(42 + tid * 10007);
-        uniform_int_distribution<int> dist(0, n_exons - 1);
         vector<long> local_counts(n_vals, 0);
 
-        #pragma omp for schedule(dynamic, 1)
+        #pragma omp for schedule(static)
         for (int b = 0; b < n_boot; ++b) {
+            // Option 1 (core-count-independent): seed RNG per iteration, not per thread.
+            mt19937 rng(30580u + (unsigned long)b * 2654435761ul);
+            uniform_int_distribution<int> dist(0, n_exons - 1);
             // Resample
             vector<int> boot_idx(n_exons);
             for (int i = 0; i < n_exons; ++i)
@@ -311,7 +312,7 @@ int main(int argc, char *argv[]) {
                 done = progress_done;
                 // Report every 1% or every iteration if < 100 total
                 if (n_boot < 100 || done % max(1, n_boot / 100) == 0)
-                    cerr << "PROGRESS " << done << " " << n_boot << "\n";
+                    cerr << "PROGRESS " << done << " " << n_boot << endl;
             } else {
                 #pragma omp atomic
                 progress_done++;
@@ -326,9 +327,9 @@ int main(int argc, char *argv[]) {
 
     auto t_end = chrono::steady_clock::now();
     double elapsed = chrono::duration<double>(t_end - t_start).count();
-    cerr << "PROGRESS " << n_boot << " " << n_boot << "\n";
+    cerr << "PROGRESS " << n_boot << " " << n_boot << endl;
     cerr << "Bootstrap completed in " << fixed << setprecision(1)
-         << elapsed << " seconds\n";
+         << elapsed << " seconds" << endl;
 
     // ── Empirical p-values ──────────────────────────────────────────────────
     vector<double> pEmpirical(n_vals);
@@ -339,7 +340,7 @@ int main(int argc, char *argv[]) {
     string out_path = pp + "bootstrap_" + to_string(n_boot) + ".tsv";
     ofstream out(out_path);
     if (!out.is_open()) {
-        cerr << "Error: cannot write " << out_path << "\n";
+        cerr << "Error: cannot write " << out_path << endl;
         return 1;
     }
 
@@ -364,6 +365,6 @@ int main(int argc, char *argv[]) {
     }
     out.close();
 
-    cerr << "Results saved to " << out_path << "\n";
+    cerr << "Results saved to " << out_path << endl;
     return 0;
 }

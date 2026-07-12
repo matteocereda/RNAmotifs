@@ -585,11 +585,11 @@ def run_discovery_mode(args, root, mars_dir, eclip_dir):
     results_parent = os.path.join(root, "results")
     rbps = get_rbps_for_cell_line(args.cell_line)
 
-    # Discovery output directory: results/MaRs_discovery/<cell_line>_<genome>/
+    # Discovery output directory: results/discovery/<cell_line>_<genome>/
     # No date prefix — discovery is resumable across days via manifest
     ii_suffix = f"_ii{args.in_intron}" if args.in_intron != 300 else ""
     disc_subdir = f"{args.cell_line}_{args.genome}{ii_suffix}{args.disc_suffix}"
-    disc_output = os.path.join(root, "results", "MaRs_discovery", disc_subdir, "")
+    disc_output = os.path.join(root, "results", "discovery", disc_subdir, "")
     os.makedirs(disc_output, exist_ok=True)
 
     # Manifest for crash-safe resumption
@@ -1024,7 +1024,7 @@ def run_discovery_mode_bayes(args, root, mars_dir, eclip_dir):
 
     ii_suffix = f"_ii{args.in_intron}" if args.in_intron != 300 else ""
     disc_subdir = f"{args.cell_line}_{args.genome}{ii_suffix}{args.disc_suffix}_bayes"
-    disc_output = os.path.join(root, "results", "MaRs_discovery", disc_subdir, "")
+    disc_output = os.path.join(root, "results", "discovery", disc_subdir, "")
     os.makedirs(disc_output, exist_ok=True)
 
     # Manifest for crash-safe resumption
@@ -1468,13 +1468,31 @@ def generate_panel_heatmaps(args, root, mars_dir, eclip_dir, disc_output, r_mars
         if staged == 0:
             print(f"  [heatmaps] {rbp}: no matching sweeps, skip"); continue
 
+        # Resolve this RBP's DESeq2 file so the heatmap is annotated with its
+        # knockdown log2FC. --deseq-file (single file) takes precedence; otherwise
+        # look it up by name in --deseq-dir (<cell>/ subdir first, then flat).
+        deseq_arg = "NA"
+        if getattr(args, "deseq_file", None):
+            deseq_arg = args.deseq_file
+        elif getattr(args, "deseq_dir", None):
+            import glob as _glob
+            cand = (_glob.glob(os.path.join(args.deseq_dir, args.cell_line,
+                                            f"*_{rbp}_DESeq_results.rds"))
+                    or _glob.glob(os.path.join(args.deseq_dir,
+                                               f"*_{rbp}_DESeq_results.rds")))
+            if cand:
+                deseq_arg = cand[0]
+            else:
+                print(f"  [heatmaps] {rbp}: no DESeq2 file in {args.deseq_dir}, "
+                      f"annotating without log2FC")
+
         try:
             run(f"{mars_score_bin} -i {exon} -n {rbp} -d {sweep}/ -r {gref} "
                 f"-c {args.cell_line} -p {args.cores} -e {eclip_dir} -o {scores}/ "
                 f"--in-exon {args.in_exon} --in-intron {args.in_intron} "
                 f"-b {args.bootstraps} --summary")
             run(f"Rscript {heatmap_script} -i {exon} -n {rbp} -d {sweep}/ -r {gref}/ "
-                f"-c {args.cell_line} -e NA -p {args.cores} -o {scores}/ -s {r_mars_dir} "
+                f"-c {args.cell_line} -e {deseq_arg} -p {args.cores} -o {scores}/ -s {r_mars_dir} "
                 f"--in_exon {args.in_exon} --in_intron {args.in_intron} "
                 f"--sort_by {args.sort_by} "
                 f"--top_mrms {getattr(args, 'heatmap_top_mrms', 0)} "
@@ -1526,6 +1544,11 @@ def main():
         help="CPU cores (default: 1)")
     parser.add_argument("--deseq-file", default=None,
         help="Optional DESeq2 differential expression file (.tsv or .rds)")
+    parser.add_argument("--deseq-dir", default=None,
+        help="Optional directory of per-RBP DESeq2 files for --make-heatmaps, named "
+             "<accession>_<RBP>_DESeq_results.rds. Looked up as <deseq-dir>/<cell>/ "
+             "first, then <deseq-dir>/ . When set, each panel heatmap is annotated "
+             "with that RBP's expression log2FC (knockdown vs control).")
     parser.add_argument("--mars-dir", required=True,
         help="Path to RNAmars data directory (containing Tables/, Rdata/)")
 

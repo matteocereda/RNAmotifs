@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rnamotifs-mars"
+version = "2.0.0"
+description = "RNAmotifs 2.0 / MaRs — multivalent RNA-motif discovery and RBP association scoring"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+    { name = "Matteo Cereda" },
+]
+keywords = ["RNA", "splicing", "motif", "RBP", "alternative-splicing", "bioinformatics"]
+dependencies = [
+    "numpy>=1.20",
+    "scipy>=1.7",
+]
+
+[project.optional-dependencies]
+# Bayesian-optimisation GP surrogate; the engine falls back to a SciPy
+# implementation when scikit-learn is unavailable.
+bayes = ["scikit-learn>=1.0"]
+test = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://www.ceredalab.com/page-rnamotifs.html"
+
+# The pip-installable component is the Python package `rnamotifs_mars`
+# (Bayesian-optimisation engine). The command-line tools `rnamotifs`,
+# `rnamotifs-mars` and `rnamotifs-extract` are standalone executables run from
+# the repository root after building the C++ binaries (see README → Installation).
+[tool.setuptools]
+packages = ["rnamotifs_mars", "rnamotifs_mars.optim"]

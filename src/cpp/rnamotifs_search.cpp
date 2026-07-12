@@ -103,7 +103,7 @@ static void preload_chromosome(const string &genome_dir, const string &genome,
     string path = genome_dir + "/genomes/" + genome + "/" + chrom + ".string";
     ifstream fh(path, ios::binary);
     if (!fh.is_open()) {
-        cerr << "  Warning: " << path << " not found\n";
+        cerr << "  Warning: " << path << " not found" << endl;
         lock_guard<mutex> lock(chrom_mutex);
         chrom_cache[chrom] = "";
         return;
@@ -142,26 +142,33 @@ static string reverse_complement(const string &seq) {
 }
 
 // ===========================================================================
-// Tetramer enumeration (matches genome.py order exactly)
+// K-mer enumeration (k=4 matches genome.py order exactly)
 // ===========================================================================
 
-static vector<string> enumerate_tetramers() {
-    const char bases[] = {'A', 'C', 'T', 'G'};
-    const char degen[] = {'R', 'Y', 'S', 'W'};
+// Recursively enumerate all strings of length `len` over `alpha`
+static void _enum_helper(const vector<char> &alpha, int len,
+                         string &buf, vector<string> &out) {
+    if ((int)buf.size() == len) { out.push_back(buf); return; }
+    for (char c : alpha) { buf.push_back(c); _enum_helper(alpha, len, buf, out); buf.pop_back(); }
+}
+
+static vector<string> enumerate_kmers(int k) {
+    const vector<char> bases = {'A', 'C', 'T', 'G'};
+    const vector<char> degen = {'R', 'Y', 'S', 'W'};
+    // Non-redundant: all k-mers over {A,C,T,G}
     vector<string> result;
-    result.reserve(512);
-    // 256 non-redundant
-    for (int a = 0; a < 4; a++)
-        for (int b = 0; b < 4; b++)
-            for (int c = 0; c < 4; c++)
-                for (int d = 0; d < 4; d++)
-                    result.push_back({bases[a], bases[b], bases[c], bases[d]});
-    // 256 redundant (DEGEN + base + base + DEGEN)
-    for (int a = 0; a < 4; a++)
-        for (int b = 0; b < 4; b++)
-            for (int x = 0; x < 4; x++)
-                for (int y = 0; y < 4; y++)
-                    result.push_back({degen[x], bases[a], bases[b], degen[y]});
+    string buf;
+    _enum_helper(bases, k, buf, result);
+    // Redundant: first position IUPAC, middle k-2 positions standard, last position IUPAC
+    int n_middle = k - 2;
+    // Generate all middle combinations
+    vector<string> middles;
+    buf.clear();
+    _enum_helper(bases, n_middle, buf, middles);
+    for (char d1 : degen)
+        for (const string &mid : middles)
+            for (char d2 : degen)
+                result.push_back(string(1, d1) + mid + string(1, d2));
     return result;
 }
 
@@ -245,32 +252,53 @@ static vector<pair<int,int>> merge_intervals(vector<pair<int,int>> &data) {
 // Bedgraph (matches utils.py)
 // ===========================================================================
 
-// Dense array per chrom+strand for O(1) prefix-sum queries
+// Hybrid array: dense when span is small, sparse hash-map when large.
+// Prevents OOM on genomes like hg19 where merged regions span entire chromosomes.
+static const int MAX_DENSE_SPAN = 5000000;  // 5M positions (~40MB)
+
 struct DenseArray {
     vector<double> data;
     vector<double> prefix;
-    int offset;  // min position
-    int sz;      // number of positions
+    unordered_map<int, double> sparse;
+    int offset;
+    int sz;
+    bool use_sparse;
 
-    DenseArray() : offset(0), sz(0) {}
+    DenseArray() : offset(0), sz(0), use_sparse(false) {}
     DenseArray(int min_pos, int max_pos)
-        : offset(min_pos), sz(max_pos - min_pos + 1) {
-        data.assign(sz, 0.0);
+        : offset(min_pos), sz(max_pos - min_pos + 1), use_sparse(false) {
+        if (sz > MAX_DENSE_SPAN) {
+            use_sparse = true;
+        } else {
+            data.assign(sz, 0.0);
+        }
     }
 
     void add(int pos, double val) {
-        int idx = pos - offset;
-        if (idx >= 0 && idx < sz) data[idx] += val;
+        if (use_sparse) {
+            sparse[pos] += val;
+        } else {
+            int idx = pos - offset;
+            if (idx >= 0 && idx < sz) data[idx] += val;
+        }
     }
 
     void build_prefix() {
+        if (use_sparse) return;  // prefix sums not used in sparse mode
         prefix.resize(sz + 1, 0.0);
         for (int i = 0; i < sz; i++)
             prefix[i + 1] = prefix[i] + data[i];
     }
 
-    // Sum of values in positions [lo, hi] (inclusive)
     double region_sum(int lo, int hi) const {
+        if (use_sparse) {
+            double s = 0;
+            for (int p = lo; p <= hi; p++) {
+                auto it = sparse.find(p);
+                if (it != sparse.end()) s += it->second;
+            }
+            return s;
+        }
         int a = max(0, lo - offset);
         int b = min(sz, hi - offset + 1);
         if (a >= b) return 0.0;
@@ -278,6 +306,10 @@ struct DenseArray {
     }
 
     double get_value(int pos) const {
+        if (use_sparse) {
+            auto it = sparse.find(pos);
+            return (it != sparse.end()) ? it->second : 0.0;
+        }
         int idx = pos - offset;
         if (idx >= 0 && idx < sz) return data[idx];
         return 0.0;
@@ -289,7 +321,8 @@ using ChromStrandKey = pair<string, string>;
 struct Bedgraph {
     map<ChromStrandKey, DenseArray> arrays;
 
-    // Initialize dense arrays with known position ranges from the regions DB
+    // Initialize arrays with known position ranges from the regions DB.
+    // DenseArray automatically falls back to sparse mode for large spans.
     void init_from_regions(const RegionsDB &rdb, int hw) {
         for (auto &[key, regions] : rdb) {
             if (regions.empty()) continue;
@@ -343,23 +376,32 @@ struct Bedgraph {
         return it->second.region_sum(lo, hi);
     }
 
-    // Cluster using prefix sums: O(1) per position instead of O(2*hw)
+    // Cluster: replace each position's value with the window sum
     void cluster(int hw) {
-        // First build prefix sums on the raw data
         build_all_prefix();
 
-        // Now replace each position's value with the window sum
         for (auto &[key, arr] : arrays) {
-            vector<double> new_data(arr.sz, 0.0);
-            for (int i = 0; i < arr.sz; i++) {
-                if (arr.data[i] > 0.0) {
-                    int pos = i + arr.offset;
-                    new_data[i] = arr.region_sum(max(0, pos - hw), pos + hw);
+            if (arr.use_sparse) {
+                // Sparse mode: iterate non-zero entries, compute window sums
+                unordered_map<int, double> new_sparse;
+                for (auto &[pos, val] : arr.sparse) {
+                    if (val > 0.0) {
+                        new_sparse[pos] = arr.region_sum(pos - hw, pos + hw);
+                    }
                 }
+                arr.sparse = move(new_sparse);
+            } else {
+                // Dense mode: use prefix sums for O(1) window queries
+                vector<double> new_data(arr.sz, 0.0);
+                for (int i = 0; i < arr.sz; i++) {
+                    if (arr.data[i] > 0.0) {
+                        int pos = i + arr.offset;
+                        new_data[i] = arr.region_sum(max(0, pos - hw), pos + hw);
+                    }
+                }
+                arr.data = move(new_data);
+                arr.build_prefix();
             }
-            arr.data = move(new_data);
-            // Rebuild prefix for any subsequent queries
-            arr.build_prefix();
         }
     }
 };
@@ -595,7 +637,7 @@ int main(int argc, char *argv[]) {
     if (argc < 9) {
         cerr << "Usage: " << argv[0]
              << " <splicing_file> <genome_dir> <genome> <regions_name>"
-             << " <data_root> <cluster_hw> <h_min> <pth> [n_cores]\n";
+             << " <data_root> <cluster_hw> <h_min> <pth> [n_cores] [kmer_size]" << endl;
         return 1;
     }
 
@@ -609,6 +651,7 @@ int main(int argc, char *argv[]) {
     cfg.h_min         = stoi(argv[7]);
     cfg.pth           = {stod(argv[8])};
     int n_cores       = (argc >= 10) ? stoi(argv[9]) : 1;
+    int kmer_size     = (argc >= 11) ? stoi(argv[10]) : 4;
 
 #ifdef _OPENMP
     omp_set_num_threads(n_cores);
@@ -633,13 +676,14 @@ int main(int argc, char *argv[]) {
     // Pre-load chromosomes
     set<string> chrom_set;
     for (auto &[key, _] : rdb) chrom_set.insert(key.first);
-    cerr << "Pre-loading " << chrom_set.size() << " chromosomes...\n";
+    cerr << "Pre-loading " << chrom_set.size() << " chromosomes..." << endl;
     for (const string &ch : chrom_set)
         preload_chromosome(cfg.genome_dir, cfg.genome, ch);
-    cerr << "Chromosomes loaded.\n";
+    cerr << "Chromosomes loaded." << endl;
 
     // Enumerate motifs
-    vector<string> motifs = enumerate_tetramers();
+    cerr << "K-mer size: " << kmer_size << endl;
+    vector<string> motifs = enumerate_kmers(kmer_size);
     int total = (int)motifs.size();
     vector<vector<string>> all_stats(total);
 
@@ -654,7 +698,7 @@ int main(int argc, char *argv[]) {
         {
             done++;
             if (done % max(1, total / 100) == 0 || done == total)
-                cerr << "PROGRESS " << done << " " << total << "\n";
+                cerr << "PROGRESS " << done << " " << total << endl;
         }
     }
 
@@ -664,7 +708,7 @@ int main(int argc, char *argv[]) {
         for (const string &line : all_stats[i])
             stats_out << line;
 
-    cerr << "PROGRESS " << total << " " << total << "\n";
-    cerr << "Search complete.\n";
+    cerr << "PROGRESS " << total << " " << total << endl;
+    cerr << "Search complete." << endl;
     return 0;
 }

@@ -40,6 +40,7 @@ struct Config {
     string results_folder;
     string tetramer_folder;
     string splicing_file;
+    string event_type        = "SE";       // "SE" or "RI"
     double dIRZ              = 0.1;
     double dIRO              = 1.0;
     unsigned int regions[4]  = {};

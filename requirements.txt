@@ -1,0 +1,10 @@
+# Python runtime dependencies for RNAmotifs 2.0 / MaRs
+numpy>=1.20
+scipy>=1.7
+
+# Optional: enables the scikit-learn Gaussian-process surrogate for Bayesian
+# optimisation (--optim bayes). If absent, the engine falls back to SciPy.
+# scikit-learn>=1.0
+
+# Tests:
+# pytest>=7

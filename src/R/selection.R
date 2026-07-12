@@ -51,13 +51,26 @@ res <- read.delim(paste0(pp, "bootstrap_", n_boot, ".tsv"),
 
 # --- Select significantly enriched motifs -------------------------------------
 
+# Adaptive per-region Fisher cutoff: the 1st percentile of each region's
+# combined (enhanced + silenced) bootstrap Fisher p-values, capped at 0.05.
+# This matches the RNAMaRs discovery selector (mars/selection_of_tetramers.R)
+# so the plain CLI and the mars pipeline select identically. cFisher is retained
+# only for the per-region where.sign annotation below, NOT for selection.
+p_cutoff <- sapply(1:3, function(r) {
+    q <- quantile(c(res[[paste0("r", r, "enh_pFis")]],
+                    res[[paste0("r", r, "sil_pFis")]]), 0.01, names = FALSE)
+    if (q < 0.05) q else 0.05
+})
+cat(sprintf("[selection] adaptive Fisher cutoffs (1st pct, cap 0.05): %s\n",
+            paste(signif(p_cutoff, 3), collapse = ", ")))
+
+## Methods: keep pFis <= min(1st-percentile, 0.05). Use <= (not <): '<' wrongly
+## dropped the most significant motifs when the cutoff collapses to 0 at wide
+## windows (>=1% of motifs saturate the Fisher test at pFis==0).
 sig <- subset(res,
-    (r1enh_pFis <= cFisher & r1enh_pEmp <= cEmp) |
-    (r2enh_pFis <= cFisher & r2enh_pEmp <= cEmp) |
-    (r3enh_pFis <= cFisher & r3enh_pEmp <= cEmp) |
-    (r1sil_pFis <= cFisher & r1sil_pEmp <= cEmp) |
-    (r2sil_pFis <= cFisher & r2sil_pEmp <= cEmp) |
-    (r3sil_pFis <= cFisher & r3sil_pEmp <= cEmp))
+    (r1enh_pFis <= p_cutoff[1] & r1enh_pEmp <= cEmp) | (r1sil_pFis <= p_cutoff[1] & r1sil_pEmp <= cEmp) |
+    (r2enh_pFis <= p_cutoff[2] & r2enh_pEmp <= cEmp) | (r2sil_pFis <= p_cutoff[2] & r2sil_pEmp <= cEmp) |
+    (r3enh_pFis <= p_cutoff[3] & r3enh_pEmp <= cEmp) | (r3sil_pFis <= p_cutoff[3] & r3sil_pEmp <= cEmp))
 
 if (nrow(sig) == 0) {
     cat("No significant tetramers found.\n")

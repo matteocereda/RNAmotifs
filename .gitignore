@@ -1,30 +1,34 @@
 # Build artifacts
 build/
+*.o
+*.so
+*.a
 
-# Python bytecode
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+.pytest_cache/
 
-# Genome data (large, user-downloaded)
-genomes/mm9/
-genomes/mm10/
-genomes/hg19/
-genomes/hg38/
+# R
+.Rhistory
+.RData
+.Rproj.user/
+Rplots.pdf
+
+# Genome data — user-downloaded (the *.download.sh scripts ARE tracked)
+genomes/*/
+genomes/*.string
+genomes/*.phylop.bin
+genomes/twoBitToFa
 genomes/bigWigToBedGraph
 
-# Results (generated at runtime)
+# Runtime outputs
 results/
+regions/
+logs/
 
-# Uploads (GUI temporary files)
-uploads/
-
-# Editor/IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS files
+# OS
 .DS_Store
-Thumbs.db
