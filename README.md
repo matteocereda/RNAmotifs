@@ -270,21 +270,10 @@ Install with `Rscript install_mars_deps.R`. Key packages:
 
 ---
 
-## Documentation
+## Tutorial
 
 This README is a high-level overview. The full tutorial is hosted on the lab website at
-**[ceredalab.com/page-rnamotifs.html](https://www.ceredalab.com/page-rnamotifs.html)** and mirrored
-in this repository under **[`docs/tutorial/`](docs/tutorial/)**:
-
-- **[Getting started](docs/tutorial/README.md)** — what RNAmotifs does and how the algorithm works
-- **[Input format](docs/tutorial/input-format.md)** — file layout, the `dIRank` convention, rMATS import
-- **[Parameters](docs/tutorial/parameters.md)** — every flag, with tuning guidance
-- **[Output & interpretation](docs/tutorial/output.md)** — reading the RNA splicing map
-- **[Examples](docs/tutorial/examples.md)** — copy-paste recipes (NOVA, PTBP1, rMATS, intron retention)
-- **[RNAmotifs-MaRs](docs/tutorial/rnamotifs-mars.md)** — discovery & application modes
-- **[Troubleshooting](docs/tutorial/troubleshooting.md)** — FAQ and common pitfalls
-
-Data preprocessing (ENCODE eCLIP + rMATS → exon sets and binding profiles) is documented in [`docs/data_preprocessing_methods.md`](docs/data_preprocessing_methods.md).
+**[ceredalab.com/page-rnamotifs.html](https://www.ceredalab.com/page-rnamotifs.html)** 
 
 ---
 
