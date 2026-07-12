@@ -294,10 +294,6 @@ Data preprocessing (ENCODE eCLIP + rMATS → exon sets and binding profiles) is 
 
 ### Tetramer search: Python m3_light vs C++17
 
-<p align="center">
-  <img src="benchmarks/performance_comparison.png" alt="Tetramer search benchmark" width="700">
-</p>
-
 | Implementation | Cores | Time | Speedup |
 |---------------|-------|------|---------|
 | Python m3_light (v1) | 1 | ~50 min | 1.0x |
