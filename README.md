@@ -122,16 +122,6 @@ All C++ binaries are self-contained -- no external C++ library dependencies.
 
 ## Quick start
 
-> ⚠️ **Prerequisite — download the genome first.** Genome sequence and PhyloP
-> conservation data are **not** bundled with RNAmotifs; only the download helper
-> scripts are shipped. Before running `rnamotifs`, fetch the genome(s) you need
-> with the corresponding script in `genomes/` (see [Installation → Genome setup](#genome-setup)).
-> For the NOVA example below you need **mm9**:
->
-> ```bash
-> cd genomes && ./mm9.download.sh && cd ..     # add ./download_phylop.sh mm9 for --conservation
-> ```
-
 ```bash
 ./rnamotifs examples/NOVA_input.txt \
     --name NOVA --genome mm9 \
@@ -163,9 +153,8 @@ Parameters use **paper notation** — `n` is the clustering window (`n = 2·hw`;
 
 An MRM is called enriched when, per region (R1/R2/R3) and direction (enhanced/silenced), `pFis ≤ min(1st-percentile, 0.05)` **and** `pEmp ≤ --p-empirical`.
 
-> **Full reference** — every flag, the exact input format, output files, worked examples,
-> RNAmotifs-MaRs modes and troubleshooting are documented in the full tutorial on the lab
-> website: **[ceredalab.com/page-rnamotifs.html](https://www.ceredalab.com/page-rnamotifs.html)**.
+> **Full reference** — every flag, the exact input format, output files, worked examples and troubleshooting live in the **[tutorial](docs/tutorial/)**:
+> [Parameters](docs/tutorial/parameters.md) · [Input format](docs/tutorial/input-format.md) · [Output](docs/tutorial/output.md) · [Examples](docs/tutorial/examples.md) · [Troubleshooting](docs/tutorial/troubleshooting.md) · [RNAmotifs-MaRs](docs/tutorial/rnamotifs-mars.md).
 
 ### Supported genomes
 
@@ -267,9 +256,8 @@ Discovery is **resumable** (skips completed RBPs/combos via the manifest) and me
 (RBPs processed sequentially, < 2 GB peak). A full grid run (~28 RBPs × 20 combos, `-b 1000`)
 takes ~9–12 h on 10 cores; re-running with cached sweeps re-scores in minutes.
 
-> See the full **RNAmotifs-MaRs tutorial** on the lab website
-> (**[ceredalab.com/page-rnamotifs.html](https://www.ceredalab.com/page-rnamotifs.html)**) for the
-> full flag list, required data layout, output files, and worked discovery/application examples.
+> See the **[RNAmotifs-MaRs tutorial](docs/tutorial/rnamotifs-mars.md)** for the full flag
+> list, required data layout, output files, and worked discovery/application examples.
 
 ### R dependencies for MaRs
 
@@ -284,12 +272,19 @@ Install with `Rscript install_mars_deps.R`. Key packages:
 
 ## Documentation
 
-This README is a high-level overview. The **full tutorial** — algorithm overview, input
-format and the `dIRank` convention, every parameter with tuning guidance, output
-interpretation, worked examples (NOVA, PTBP1, rMATS, intron retention), the RNAmotifs-MaRs
-discovery/application modes, and troubleshooting — is hosted on the lab website:
+This README is a high-level overview. The full tutorial is hosted on the lab website at
+**[ceredalab.com/page-rnamotifs.html](https://www.ceredalab.com/page-rnamotifs.html)** and mirrored
+in this repository under **[`docs/tutorial/`](docs/tutorial/)**:
 
-**[ceredalab.com/page-rnamotifs.html](https://www.ceredalab.com/page-rnamotifs.html)**
+- **[Getting started](docs/tutorial/README.md)** — what RNAmotifs does and how the algorithm works
+- **[Input format](docs/tutorial/input-format.md)** — file layout, the `dIRank` convention, rMATS import
+- **[Parameters](docs/tutorial/parameters.md)** — every flag, with tuning guidance
+- **[Output & interpretation](docs/tutorial/output.md)** — reading the RNA splicing map
+- **[Examples](docs/tutorial/examples.md)** — copy-paste recipes (NOVA, PTBP1, rMATS, intron retention)
+- **[RNAmotifs-MaRs](docs/tutorial/rnamotifs-mars.md)** — discovery & application modes
+- **[Troubleshooting](docs/tutorial/troubleshooting.md)** — FAQ and common pitfalls
+
+Data preprocessing (ENCODE eCLIP + rMATS → exon sets and binding profiles) is documented in [`docs/data_preprocessing_methods.md`](docs/data_preprocessing_methods.md).
 
 ---
 
@@ -305,31 +300,46 @@ discovery/application modes, and troubleshooting — is hosted on the lab websit
 
 | Implementation | Cores | Time | Speedup |
 |---------------|-------|------|---------|
-| Python m3_light (v1) | 1 | ~35 min | 1x |
-| C++17 rnamotifs_search (v2) | 1 | ~17 min | **2x** |
-| C++17 rnamotifs_search (v2) | 4 | ~5 min | **7x** |
-| C++17 rnamotifs_search (v2) | 12 | ~2 min | **18x** |
+| Python m3_light (v1) | 1 | ~50 min | 1.0x |
+| C++17 rnamotifs_search (v2) | 1 | ~12 min | **4.2x** |
+| C++17 rnamotifs_search (v2) | 4 | ~3.2 min | **15.8x** |
+| C++17 rnamotifs_search (v2) | 8 | ~2.3 min | **22.0x** |
+| C++17 rnamotifs_search (v2) | 10 | ~2.2 min | **22.9x** |
 
-The C++ implementation produces **byte-identical output** to the Python
-m3_light module (verified: 0 diffs across 1024 BED files, both alphabets).
+512 motifs (256 ACGT + 256 IUPAC). Scaling flattens beyond the 6 physical cores
+(memory-bandwidth bound). Peak RAM: v1 ~0.17 GB (Python dicts) vs v2 ~2.6 GB
+(dense per-chromosome arrays) — the memory-for-speed trade-off behind the O(1)
+window queries. The C++ implementation produces **byte-identical output** to the
+Python m3_light module (verified: 0 diffs across 1024 BED files, both alphabets).
 
 ### Bootstrap FDR
 
-| Implementation | Cores | 10,000 iterations | Speedup |
+Measured at **B = 1,000 permutations** (the pipeline default and manuscript standard):
+
+| Implementation | Cores | 1,000 permutations | Speedup |
 |---------------|-------|-------------------|---------|
-| R bootstrap-FDR.R (v1) | 1 | ~90 sec | 1x |
-| C++17 rnamotifs_bootstrap (v2) | 1 | ~20 sec | **4.5x** |
-| C++17 rnamotifs_bootstrap (v2) | 12 | ~2 sec | **~45x** |
+| R bootstrap-FDR.R (v1) | 1 | ~14 min | 1.0x |
+| C++17 rnamotifs_bootstrap (v2) | 1 | ~32 sec | **~26x** |
+| C++17 rnamotifs_bootstrap (v2) | 10 | ~14 sec | **~60x** |
+
+v2 peak RAM ~47 MB vs v1 ~0.3 GB. (The earlier "R ~90 s / C++ ~2 s at 10,000
+iterations" figures were not reproducible; these are measured at B = 1,000.)
 
 ### Full pipeline
 
+Measured end-to-end on the identical NOVA input at B = 1,000:
+
 | Pipeline | Cores | Time |
 |----------|-------|------|
-| v1 (Python 2 + R + C++03) | 1 | ~40 min |
-| v2 (C++17 + OpenMP + R) | 12 | ~5 min |
-| v2 with `--structure --conservation` | 12 | ~1h 11min |
+| v1 (Python 2 m3_light + gMotifs C++03 + R) | 1 | ~70 min |
+| v2 (C++17 + OpenMP + R) | 1 | ~13 min |
+| v2 (C++17 + OpenMP + R) | 10 | ~2.6 min |
+| v2 with `--structure --conservation` | 10 | ~1h 11min |
 
-Structure and conservation profiling are I/O-bound (ViennaRNA folding, PhyloP lookup) and dominate the runtime when enabled.
+The v1 pipeline is single-threaded throughout, giving a **~26×** end-to-end
+speed-up for v2 (10 cores). Total peak resident memory stays < 4 GB. Structure
+and conservation profiling are I/O-bound (ViennaRNA folding, PhyloP lookup) and
+dominate the runtime when enabled.
 
 ### Result reproducibility
 
@@ -415,26 +425,16 @@ RNAmotifs2/
 │       └── mars/              # RNAMaRs R scripts
 │           ├── compute_association_scores.R
 │           ├── generate_heatmap.R
+│           ├── figure_parameter_optimization.R
 │           ├── selection_of_tetramers.R
 │           ├── sign_reg_plot.R
 │           ├── config_RNAmars.R
 │           └── conf/
-│           ├── selection_of_tetramers_old_subset.R
-│           └── conf/config_RNAmotifs.R   # -> ../../config.R
-├── rnamotifs_mars/            # Python package (Bayesian optimisation)
-│   └── optim/bayes_opt.py
-├── tests/                     # unit tests (pytest)
-├── examples/                  # NOVA example input + output figures
-├── genomes/                   # genome download scripts only (data not bundled)
-├── docs/                      # figures/assets (full tutorial: ceredalab.com)
-├── pyproject.toml             # Python package metadata
-├── requirements.txt           # Python dependencies
-├── CITATION.cff
-└── LICENSE                    # MIT
+├── genomes/                   # Genome downloads & PhyloP (hg19, hg38, mm9, mm10, mm39)
+├── examples/                  # NOVA example + output figures
+├── benchmarks/                # Performance comparison
+└── LICENSE
 ```
-
-Genome `.string`/PhyloP data are downloaded by the user (see *Installation → Genome
-setup*); they are not shipped with the package.
 
 ## Contributors
 
@@ -444,4 +444,4 @@ Contributing developers: Gregor Rot, Peter Juvan, Uberto Pozzoli.
 
 ## License
 
-[MIT](LICENSE) © 2016 Matteo Cereda
+[GPL-2.0-or-later](LICENSE)
