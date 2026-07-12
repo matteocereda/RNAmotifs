@@ -25,12 +25,6 @@ RNAmotifs identifies clusters of short RNA motifs (tetramers) enriched at specif
 
 <p align="center"><em>RNAmotifs discovers positionally enriched multivalent RNA motifs (MRMs); the <strong>MaRs</strong> module calibrates a reference panel from eCLIP + knockdown data (Phase 1) and matches enriched MRMs to RBP binding to identify the regulating protein (MRM–RBP association).</em></p>
 
-RNAmotifs has been used to identify motifs bound by NOVA, PTBP1, hnRNP C, TARDBP, TIA1 and TIAL1.
-
-<p align="center">
-  <img src="examples/NOVA.png" alt="NOVA RNA splicing map" width="700">
-</p>
-
 ## Citation
 
 If you use RNAmotifs v2.0 or the **MaRs** module, please cite the preprint:
