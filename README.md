@@ -219,7 +219,7 @@ The core tool. Runs the complete motif discovery pipeline from splicing file to 
 
 ### `rnamotifs-mars` -- MRM-RBP association scores
 
-See the dedicated [RNAmotifs-MaRs](https://www.ceredalab.com/page-rnamotifs.html) section below.
+See the dedicated section below.
 
 ---
 
