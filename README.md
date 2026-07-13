@@ -447,9 +447,12 @@ RNAmotifs2/
 
 ## Contributors
 
-Designed by **Matteo Cereda** and **Jernej Ule**.
+RNAmotifs (2026) was designed by **Matteo Cereda**.
+RNAmotifs (2014) was designed by **Matteo Cereda** and **Jernej Ule**.
+
 Main developer: Matteo Cereda.
-Contributing developers: Gregor Rot, Peter Juvan, Uberto Pozzoli.
+
+Contributing developers of RNAmotifs (2014): Gregor Rot, Peter Juvan, Uberto Pozzoli.
 
 ## License
 
