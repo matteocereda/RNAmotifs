@@ -67,6 +67,34 @@ Rscript -e 'install.packages(c("lattice", "latticeExtra",
 sudo apt-get install -y vienna-rna libvienna-rna-dev
 ```
 
+### Conda / Mamba (cross-platform, recommended)
+
+Save the following as `environment.yml` — it bundles the compiler toolchain, CMake,
+ViennaRNA, and the R plotting stack in one environment:
+
+```yaml
+name: rnamotifs2.0
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10
+  - r-base=4.2
+  - compilers
+  - cmake
+  - make
+  - liblapack
+  - libblas
+  - libpng
+  - jpeg
+  - viennarna
+  - r-lattice
+  - r-latticeextra
+  - r-ggplot2
+  - r-reshape2
+  - r-bootstrap
+```
+
 ### macOS (Homebrew)
 
 ```bash
