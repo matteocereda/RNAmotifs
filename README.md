@@ -181,8 +181,7 @@ Parameters use **paper notation** — `n` is the clustering window (`n = 2·hw`;
 
 An MRM is called enriched when, per region (R1/R2/R3) and direction (enhanced/silenced), `pFis ≤ min(1st-percentile, 0.05)` **and** `pEmp ≤ --p-empirical`.
 
-> **Full reference** — every flag, the exact input format, output files, worked examples and troubleshooting live in the **[tutorial](docs/tutorial/)**:
-> [Parameters](docs/tutorial/parameters.md) · [Input format](docs/tutorial/input-format.md) · [Output](docs/tutorial/output.md) · [Examples](docs/tutorial/examples.md) · [Troubleshooting](docs/tutorial/troubleshooting.md) · [RNAmotifs-MaRs](docs/tutorial/rnamotifs-mars.md).
+> **Full reference** — every flag, the exact input format, output files, worked examples and troubleshooting live in the **[https://www.ceredalab.com/page-rnamotifs.html](https://www.ceredalab.com/page-rnamotifs.html) 
 
 ### Supported genomes
 
@@ -220,14 +219,13 @@ The core tool. Runs the complete motif discovery pipeline from splicing file to 
 
 ### `rnamotifs-mars` -- MRM-RBP association scores
 
-See the dedicated [RNAmotifs-MaRs](#rnamotifs-mars) section below.
+See the dedicated [RNAmotifs-MaRs](https://www.ceredalab.com/page-rnamotifs.html) section below.
 
 ---
 
 ## RNAmotifs-MaRs
 
-**MaRs** stands for **M**ultivalent RNA **m**otifs **a**nd candidate **R**egulator**s** of splicing. RNAmotifs-MaRs integrates RNAmotifs motif discovery with eCLIP RBP binding data to compute **MRM-RBP association scores**, linking the enriched multivalent RNA motifs (MRMs) to the RNA-binding proteins likely to regulate them. It extends the [RNAMaRs](https://github.com/ceredamatteo-lab/theRNAmars) framework by coupling it directly with the RNAmotifs motif enrichment pipeline.
-
+**MaRs** stands for **M**ultivalent RNA **m**otifs **a**nd candidate **R**egulator**s** of splicing. RNAmotifs-MaRs integrates RNAmotifs motif discovery with eCLIP RBP binding data to compute **MRM-RBP association scores**, linking the enriched multivalent RNA motifs (MRMs) to the RNA-binding proteins likely to regulate them. 
 ### How it works
 
 The pipeline runs in three phases:
@@ -284,7 +282,7 @@ Discovery is **resumable** (skips completed RBPs/combos via the manifest) and me
 (RBPs processed sequentially, < 2 GB peak). A full grid run (~28 RBPs × 20 combos, `-b 1000`)
 takes ~9–12 h on 10 cores; re-running with cached sweeps re-scores in minutes.
 
-> See the **[RNAmotifs-MaRs tutorial](docs/tutorial/rnamotifs-mars.md)** for the full flag
+> See the **[RNAmotifs-MaRs tutorial](https://www.ceredalab.com/page-rnamotifs.html)** for the full flag
 > list, required data layout, output files, and worked discovery/application examples.
 
 ### R dependencies for MaRs
@@ -371,7 +369,7 @@ Both were verified on the NOVA dataset with matching parameters.
 
 ## What's new in v2.0
 
-v2.0 is a complete rewrite of the [original RNAmotifs](https://github.com/ceredamatteo-lab/RNAmotifs). Same algorithm, same results, modernised implementation.
+v2.0 is a complete rewrite of the original RNAmotifs (Genome Biology, 2014). Same algorithm, same results, modernised implementation.
 
 | Component | v1 | v2 |
 |-----------|----|----|
